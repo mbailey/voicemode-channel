@@ -15,9 +15,10 @@
 
 import WebSocket from 'ws'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { hostname } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { EventEmitter } from 'node:events'
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,32 @@ const TOKEN_EXPIRY_BUFFER_SECONDS = 60
 const HEARTBEAT_INTERVAL_MS = 25_000
 const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
+
+// ---------------------------------------------------------------------------
+// Project context helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive project context from the working directory.
+ * Returns the git remote origin basename (e.g., "voicemode-connect") or
+ * the directory name as fallback. Returns null if detection fails.
+ */
+function get_project_context(cwd: string): string | null {
+  try {
+    // Try git remote origin URL first (most specific)
+    const remote_url = execSync('git remote get-url origin 2>/dev/null', { cwd, encoding: 'utf8' }).trim()
+    if (remote_url) {
+      // Extract repo name from URL: https://github.com/user/repo.git -> repo
+      const repo_name = basename(remote_url).replace(/\.git$/, '')
+      if (repo_name) return repo_name
+    }
+  } catch {
+    // Not a git repo or no remote -- fall through
+  }
+
+  // Fallback to directory name
+  return basename(cwd) || null
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -118,7 +145,7 @@ async function get_valid_token(log: (msg: string) => void): Promise<string | nul
   const creds = load_credentials()
   if (!creds) {
     log('No credentials found at ~/.voicemode/credentials')
-    log('Run: voicemode connect login')
+    log('Run: voicemode connect auth login')
     return null
   }
 
@@ -130,14 +157,14 @@ async function get_valid_token(log: (msg: string) => void): Promise<string | nul
 
   if (!creds.refresh_token) {
     log('No refresh token available -- please re-login')
-    log('Run: voicemode connect login')
+    log('Run: voicemode connect auth login')
     return null
   }
 
   const refreshed = await refresh_access_token(creds.refresh_token)
   if (!refreshed) {
     log('Token refresh failed -- please re-login')
-    log('Run: voicemode connect login')
+    log('Run: voicemode connect auth login')
     return null
   }
 
@@ -371,22 +398,28 @@ export class GatewayClient extends EventEmitter {
     const agent_name = process.env.VOICEMODE_AGENT_NAME ?? 'voicemode'
     const display_name = process.env.VOICEMODE_AGENT_DISPLAY_NAME ?? 'Claude Code'
     const host = hostname()
+    const project_path = process.cwd()
+    const context = get_project_context(project_path)
+
+    const user_entry: Record<string, unknown> = {
+      name: agent_name,
+      host,
+      display_name,
+      presence: 'available',
+      project_path,
+    }
+    if (context) {
+      user_entry.context = context
+    }
 
     const capabilities_msg = {
       type: 'capabilities_update',
       platform: 'claude-code',
-      users: [
-        {
-          name: agent_name,
-          host,
-          display_name,
-          presence: 'available',
-        },
-      ],
+      users: [user_entry],
     }
 
     this._ws.send(JSON.stringify(capabilities_msg))
-    this._log(`Sent capabilities_update: agent="${agent_name}" display="${display_name}" host="${host}"`)
+    this._log(`Sent capabilities_update: agent="${agent_name}" display="${display_name}" host="${host}" context="${context ?? project_path}"`)
   }
 
   private _start_heartbeat(): void {
