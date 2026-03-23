@@ -6,6 +6,8 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [0.1.3] - 2026-03-24
 
+## [0.1.3] - 2026-03-24
+
 ### Added
 - **Profile tool** -- `profile` MCP tool for dynamic agent identity management
   - Call with no args to read current profile (name, display_name, context, voice, presence)
