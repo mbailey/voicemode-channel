@@ -4,6 +4,22 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-24
+
+### Added
+- **Profile tool** -- `profile` MCP tool for dynamic agent identity management
+  - Call with no args to read current profile (name, display_name, context, voice, presence)
+  - Call with fields to update and push capabilities_update to gateway in real-time
+  - Agents can change how they appear in VoiceMode Connect mid-session
+- Profile state initialized from env vars (VOICEMODE_AGENT_NAME, VOICEMODE_AGENT_DISPLAY_NAME)
+- Context defaults to git repo name, overridable via profile tool
+- Profile re-sent on gateway reconnect (survives connection drops)
+
+### Changed
+- Exported `ProfileData` interface and `get_project_context()` from gateway module
+- `GatewayClient.send_capabilities_update()` now accepts profile data parameter
+- Refactored tool handlers into separate functions (handle_reply_tool, handle_profile_tool)
+
 ## [0.1.2] - 2026-03-23
 
 ## [0.1.1] - 2026-03-23
