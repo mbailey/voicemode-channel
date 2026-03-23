@@ -14,6 +14,7 @@
  */
 
 import WebSocket from 'ws'
+import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { homedir } from 'node:os'
@@ -204,6 +205,7 @@ export class GatewayClient extends EventEmitter {
   private _ws: WebSocket | null = null
   private _state: GatewayState = 'disconnected'
   private _session_id: string | null = null
+  private readonly _agent_session_id: string = process.env.CLAUDE_SESSION_ID ?? randomUUID()
   private _heartbeat_timer: ReturnType<typeof setInterval> | null = null
   private _retry_delay_ms = INITIAL_RETRY_DELAY_MS
   private _reconnect_count = 0
@@ -222,6 +224,10 @@ export class GatewayClient extends EventEmitter {
 
   get session_id(): string | null {
     return this._session_id
+  }
+
+  get agent_session_id(): string {
+    return this._agent_session_id
   }
 
   // -----------------------------------------------------------------------
@@ -445,11 +451,12 @@ export class GatewayClient extends EventEmitter {
     const capabilities_msg = {
       type: 'capabilities_update',
       platform: 'claude-code',
+      session_id: this._agent_session_id,
       users: [user_entry],
     }
 
     this._ws.send(JSON.stringify(capabilities_msg))
-    this._log(`Sent capabilities_update: agent="${agent_name}" display="${display_name}" host="${host}" context="${context ?? project_path}" presence="${presence}"`)
+    this._log(`Sent capabilities_update: session="${this._agent_session_id}" agent="${agent_name}" display="${display_name}" host="${host}" context="${context ?? project_path}" presence="${presence}"`)
   }
 
   private _start_heartbeat(): void {
