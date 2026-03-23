@@ -19,11 +19,34 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient } from './gateway.js'
+
+// ---------------------------------------------------------------------------
+// Load ~/.voicemode/voicemode.env (simple dotenv parsing)
+// Env vars already set in the process take precedence.
+// ---------------------------------------------------------------------------
+try {
+  const env_path = join(homedir(), '.voicemode', 'voicemode.env')
+  const env_content = readFileSync(env_path, 'utf8')
+  for (const line of env_content.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq < 1) continue
+    const key = trimmed.slice(0, eq).trim()
+    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
+    // Don't override existing env vars
+    if (!(key in process.env)) {
+      process.env[key] = value
+    }
+  }
+} catch {
+  // voicemode.env not found -- that's fine, use env vars only
+}
 
 // ---------------------------------------------------------------------------
 // Explicit opt-in gate -- channel server must NOT connect to external services

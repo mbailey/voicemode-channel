@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "voicemode-channel": {
-      "command": "./start.sh"
+      "command": "${CLAUDE_PLUGIN_ROOT}/start.sh"
     }
   }
 }
