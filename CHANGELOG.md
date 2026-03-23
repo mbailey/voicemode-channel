@@ -4,6 +4,8 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-24
+
 ## [0.1.3] - 2026-03-24
 
 ## [0.1.3] - 2026-03-24
