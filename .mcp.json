@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "voicemode-channel": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/start.sh",
+      "env": {
+        "NODE_PATH": "${CLAUDE_PLUGIN_DATA}/node_modules"
+      }
+    }
+  }
+}

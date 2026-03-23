@@ -1,0 +1,16 @@
+{
+  "name": "voicemode-channel",
+  "version": "0.1.0",
+  "description": "VoiceMode Channel - inbound voice calls to Claude Code via VoiceMode Connect",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "tsx": "^4.19.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
+  }
+}

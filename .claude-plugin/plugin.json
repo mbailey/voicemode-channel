@@ -1,0 +1,19 @@
+{
+  "name": "voicemode-channel",
+  "version": "0.1.0",
+  "description": "Inbound voice calls to Claude Code via VoiceMode Connect",
+  "author": {
+    "name": "Mike Bailey",
+    "url": "https://github.com/mbailey"
+  },
+  "repository": "https://github.com/mbailey/voicemode-channel",
+  "homepage": "https://github.com/mbailey/voicemode-channel",
+  "license": "MIT",
+  "keywords": [
+    "voicemode",
+    "voice",
+    "channel",
+    "websocket",
+    "voicemode-connect"
+  ]
+}
