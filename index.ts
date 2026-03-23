@@ -23,7 +23,8 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
-import { GatewayClient } from './gateway.js'
+import { GatewayClient, get_project_context } from './gateway.js'
+import type { ProfileData } from './gateway.js'
 
 // ---------------------------------------------------------------------------
 // Load ~/.voicemode/voicemode.env (simple dotenv parsing)
@@ -72,6 +73,18 @@ const INSTRUCTIONS = [
   'Address the caller by name.',
   'Keep responses concise -- the user is listening via text-to-speech.',
 ].join(' ')
+
+// ---------------------------------------------------------------------------
+// Agent profile state (mutable via the profile tool)
+// ---------------------------------------------------------------------------
+
+let currentProfile: ProfileData = {
+  name: process.env.VOICEMODE_AGENT_NAME ?? 'voicemode',
+  display_name: process.env.VOICEMODE_AGENT_DISPLAY_NAME ?? 'Claude Code',
+  context: get_project_context(process.cwd()),
+  voice: null,
+  presence: 'available',
+}
 
 // ---------------------------------------------------------------------------
 // MCP server with channel capability
@@ -128,6 +141,39 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['text'],
         },
       },
+      {
+        name: 'profile',
+        description:
+          'Get or update the agent profile. ' +
+          'Call with no arguments to read the current profile. ' +
+          'Call with fields to update them and push a capabilities_update to the gateway.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Agent identity (e.g. "cora")',
+            },
+            display_name: {
+              type: 'string',
+              description: 'Human-readable name (e.g. "Cora 7")',
+            },
+            context: {
+              type: 'string',
+              description: 'What the agent is working on (e.g. "voicemode-connect", "VMC-298")',
+            },
+            voice: {
+              type: 'string',
+              description: 'Preferred TTS voice',
+            },
+            presence: {
+              type: 'string',
+              description: 'Agent presence status',
+              enum: ['available', 'busy', 'away'],
+            },
+          },
+        },
+      },
     ],
   }
 })
@@ -135,15 +181,27 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
 mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
 
-  if (name !== 'reply') {
-    return {
-      content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-      isError: true,
-    }
+  if (name === 'profile') {
+    return handle_profile_tool(args as Record<string, unknown> | undefined)
   }
 
+  if (name === 'reply') {
+    return handle_reply_tool(args as Record<string, unknown> | undefined)
+  }
+
+  return {
+    content: [{ type: 'text', text: `Unknown tool: ${name}` }],
+    isError: true,
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Tool handler: reply
+// ---------------------------------------------------------------------------
+
+function handle_reply_tool(args: Record<string, unknown> | undefined) {
   // Validate arguments
-  const text = (args as Record<string, unknown>)?.text
+  const text = args?.text
   if (typeof text !== 'string' || text.trim().length === 0) {
     return {
       content: [{ type: 'text', text: 'Error: text parameter is required and must be non-empty' }],
@@ -151,8 +209,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  const voice = (args as Record<string, unknown>)?.voice as string | undefined
-  const wait_for_response = (args as Record<string, unknown>)?.wait_for_response as boolean | undefined
+  const voice = args?.voice as string | undefined
+  const wait_for_response = args?.wait_for_response as boolean | undefined
 
   // Check gateway connection
   if (!gateway || gateway.state !== 'connected') {
@@ -189,7 +247,46 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       text: `Reply sent (id: ${msg_id}). Text: "${truncate(text.trim(), 120)}"`,
     }],
   }
-})
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: profile
+// ---------------------------------------------------------------------------
+
+function handle_profile_tool(args: Record<string, unknown> | undefined) {
+  // No args (or empty object) -- return current profile
+  const has_updates = args && Object.keys(args).length > 0
+  if (!has_updates) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(currentProfile, null, 2),
+      }],
+    }
+  }
+
+  // Merge provided fields into current profile
+  if (typeof args.name === 'string') currentProfile.name = args.name
+  if (typeof args.display_name === 'string') currentProfile.display_name = args.display_name
+  if (typeof args.context === 'string') currentProfile.context = args.context
+  if (typeof args.voice === 'string') currentProfile.voice = args.voice
+  if (typeof args.presence === 'string') currentProfile.presence = args.presence
+
+  log(`Profile updated: ${JSON.stringify(currentProfile)}`)
+
+  // Push capabilities update to the gateway if connected
+  if (gateway && gateway.state === 'connected') {
+    gateway.send_capabilities_update(currentProfile)
+    log('Pushed capabilities_update after profile change')
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify(currentProfile, null, 2),
+    }],
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Push a channel notification for an inbound voice event
@@ -255,6 +352,9 @@ function start_gateway(): void {
 
   gateway.on('connected', () => {
     log('Gateway connection established -- ready to receive voice events')
+    // Push current profile to the gateway on every (re)connect so the
+    // gateway always has the latest profile state.
+    gateway!.send_capabilities_update(currentProfile)
   })
 
   gateway.on('disconnected', () => {

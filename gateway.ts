@@ -22,6 +22,18 @@ import { join, basename } from 'node:path'
 import { EventEmitter } from 'node:events'
 
 // ---------------------------------------------------------------------------
+// Profile data type (shared with index.ts)
+// ---------------------------------------------------------------------------
+
+export interface ProfileData {
+  name: string
+  display_name: string
+  context: string | null
+  voice: string | null
+  presence: string
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -44,7 +56,7 @@ const MAX_RETRY_DELAY_MS = 60_000
  * Returns the git remote origin basename (e.g., "voicemode-connect") or
  * the directory name as fallback. Returns null if detection fails.
  */
-function get_project_context(cwd: string): string | null {
+export function get_project_context(cwd: string): string | null {
   try {
     // Try git remote origin URL first (most specific)
     const remote_url = execSync('git remote get-url origin 2>/dev/null', { cwd, encoding: 'utf8' }).trim()
@@ -197,6 +209,7 @@ export class GatewayClient extends EventEmitter {
   private _reconnect_count = 0
   private _shutting_down = false
   private _log: (msg: string) => void
+  private _profile: ProfileData | undefined
 
   constructor(log_fn: (msg: string) => void) {
     super()
@@ -236,6 +249,16 @@ export class GatewayClient extends EventEmitter {
     }
     this._ws.send(JSON.stringify(msg))
     return true
+  }
+
+  /**
+   * Send a capabilities_update with the given profile data.
+   * Called by the channel server when the profile tool updates fields.
+   * Stores the profile so reconnects use the latest values.
+   */
+  send_capabilities_update(profile: ProfileData): void {
+    this._profile = profile
+    this._send_capabilities_update(profile)
   }
 
   /**
@@ -324,9 +347,9 @@ export class GatewayClient extends EventEmitter {
           this._session_id = ((msg.sessionId as string) ?? '').slice(0, 12)
           this._log(`Authenticated (session: ${this._session_id})`)
 
-          // Send ready message, then announce as callable agent
+          // Send ready message; capabilities_update is sent by the
+          // channel server via the 'connected' event handler.
           this._send_ready()
-          this._send_capabilities_update()
 
           // Start heartbeat
           this._start_heartbeat()
@@ -391,25 +414,32 @@ export class GatewayClient extends EventEmitter {
    * Send capabilities_update to register as a callable agent.
    * This is how the gateway knows this connection can receive voice messages.
    * Without this, the connection won't show up in the users/contacts list.
+   *
+   * Accepts profile data from the channel server so that profile tool updates
+   * are reflected immediately without restarting.
    */
-  private _send_capabilities_update(): void {
+  private _send_capabilities_update(profile?: ProfileData): void {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return
 
-    const agent_name = process.env.VOICEMODE_AGENT_NAME ?? 'voicemode'
-    const display_name = process.env.VOICEMODE_AGENT_DISPLAY_NAME ?? 'Claude Code'
+    const agent_name = profile?.name ?? process.env.VOICEMODE_AGENT_NAME ?? 'voicemode'
+    const display_name = profile?.display_name ?? process.env.VOICEMODE_AGENT_DISPLAY_NAME ?? 'Claude Code'
+    const presence = profile?.presence ?? 'available'
     const host = hostname()
     const project_path = process.cwd()
-    const context = get_project_context(project_path)
+    const context = profile?.context ?? get_project_context(project_path)
 
     const user_entry: Record<string, unknown> = {
       name: agent_name,
       host,
       display_name,
-      presence: 'available',
+      presence,
       project_path,
     }
     if (context) {
       user_entry.context = context
+    }
+    if (profile?.voice) {
+      user_entry.voice = profile.voice
     }
 
     const capabilities_msg = {
@@ -419,7 +449,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     this._ws.send(JSON.stringify(capabilities_msg))
-    this._log(`Sent capabilities_update: agent="${agent_name}" display="${display_name}" host="${host}" context="${context ?? project_path}"`)
+    this._log(`Sent capabilities_update: agent="${agent_name}" display="${display_name}" host="${host}" context="${context ?? project_path}" presence="${presence}"`)
   }
 
   private _start_heartbeat(): void {
