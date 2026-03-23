@@ -4,6 +4,8 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-23
+
 ### Added
 - Project context in capabilities_update (git repo name + project_path)
 - Unique device IDs per project directory (enables multi-session coexistence)
