@@ -195,6 +195,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 // Push a channel notification for an inbound voice event
 // ---------------------------------------------------------------------------
 
+const EXTERNAL_MESSAGE_PREFIX = '[VoiceMode Connect - External Message]: '
+
 async function push_voice_event(
   caller: string,
   transcript: string,
@@ -208,7 +210,7 @@ async function push_voice_event(
   await mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content: transcript,
+      content: `${EXTERNAL_MESSAGE_PREFIX}${transcript}`,
       meta,
     },
   })
