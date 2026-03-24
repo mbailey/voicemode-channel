@@ -62,7 +62,7 @@ if (process.env.VOICEMODE_CHANNEL_ENABLED !== 'true') {
 }
 
 const CHANNEL_NAME = 'voicemode-channel'
-const CHANNEL_VERSION = '0.1.0'
+const CHANNEL_VERSION = '0.1.4'
 
 const INSTRUCTIONS = [
   'Events from VoiceMode appear as <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>.',
