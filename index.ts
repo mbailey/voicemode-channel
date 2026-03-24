@@ -209,8 +209,8 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const voice = args?.voice as string | undefined
-  const wait_for_response = args?.wait_for_response as boolean | undefined
+  const voice = typeof args?.voice === 'string' ? args.voice : undefined
+  const wait_for_response = typeof args?.wait_for_response === 'boolean' ? args.wait_for_response : undefined
 
   // Check gateway connection
   if (!gateway || gateway.state !== 'connected') {
@@ -270,7 +270,7 @@ function handle_profile_tool(args: Record<string, unknown> | undefined) {
   if (typeof args.display_name === 'string') currentProfile.display_name = args.display_name
   if (typeof args.context === 'string') currentProfile.context = args.context
   if (typeof args.voice === 'string') currentProfile.voice = args.voice
-  if (typeof args.presence === 'string') currentProfile.presence = args.presence
+  if (args.presence === 'available' || args.presence === 'busy' || args.presence === 'away') currentProfile.presence = args.presence
 
   log(`Profile updated: ${JSON.stringify(currentProfile)}`)
 

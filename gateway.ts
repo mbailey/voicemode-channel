@@ -31,7 +31,7 @@ export interface ProfileData {
   display_name: string
   context: string | null
   voice: string | null
-  presence: string
+  presence: 'available' | 'busy' | 'away'
 }
 
 // ---------------------------------------------------------------------------
