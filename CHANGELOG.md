@@ -6,16 +6,33 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [0.1.5] - 2026-03-25
 
-## [0.1.4] - 2026-03-24
-
-### Added
-- Session ID (`session_id`) included in `capabilities_update` for multi-session coexistence
+Pre-public release hardening (VMCH-2). Four parallel reviews (security, reliability, code quality, plugin structure) identified and fixed issues across 8 files.
 
 ### Fixed
 - **Security:** Replace `execSync` with `execFileSync` in `get_project_context` -- eliminates shell injection surface
 - **Security:** Add WebSocket `maxPayload` limit (1 MB) -- prevents memory exhaustion from oversized payloads
+- **Security:** Add inbound transcript length limit (10,000 chars) -- prevents oversized messages
+- **Security:** Remove `project_path` from `capabilities_update` -- only send `context` (repo name), not full filesystem path
 - **Reliability:** Heartbeat liveness detection -- force-close WebSocket after 60s silence, triggers reconnect
-- **Reliability:** Guard against concurrent `start()` calls; cancellable backoff sleep for prompt shutdown
+- **Reliability:** Guard against concurrent `start()` calls -- prevents duplicate WebSocket connections
+- **Reliability:** Cancellable backoff sleep -- shutdown completes promptly instead of waiting up to 60s
+- **Plugin:** Add `set -e` to `start.sh` for fail-fast on errors
+- **Plugin:** Add 30s timeout to SessionStart hook -- prevents `npm install` from blocking indefinitely
+- **Plugin:** Add pre-flight checks to `start.sh` for better error messages
+
+### Changed
+- Tighten `presence` field to union type (`available` | `busy` | `away`) instead of bare string
+- Add runtime type checks for `voice` and `wait_for_response` tool arguments
+- Sync versions across plugin.json, package.json, index.ts, and gateway.ts
+- Fix README: `voicemode connect login` -> `voicemode connect auth login`
+- Add troubleshooting section to README
+- Add `.voicemode.env` to `.gitignore`
+- Backfill changelog entries for v0.1.2 and v0.1.4
+
+## [0.1.4] - 2026-03-24
+
+### Added
+- Session ID (`session_id`) included in `capabilities_update` for multi-session coexistence
 
 ## [0.1.3] - 2026-03-24
 
