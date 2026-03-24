@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Start the VoiceMode channel server
 # When loaded as a plugin: CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA are set by Claude Code
 # When running from the repo: falls back to script directory
