@@ -4,3 +4,4 @@ dist/
 !start.sh
 .DS_Store
 package-lock.json
+.voicemode.env

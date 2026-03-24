@@ -2,6 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
+        "timeout": 30000,
         "hooks": [
           {
             "type": "command",

@@ -20,7 +20,7 @@ claude plugin install voicemode-channel@mbailey
 
 - Node.js 20+
 - VoiceMode Connect credentials (`~/.voicemode/credentials`)
-  - Run `voicemode connect login` to authenticate
+  - Run `voicemode connect auth login` to authenticate
 
 ## Usage
 
@@ -58,6 +58,26 @@ Channel events appear in Claude's session as:
 ```
 <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>
 ```
+
+## Troubleshooting
+
+**Channel not connecting**
+- Ensure `VOICEMODE_CHANNEL_ENABLED=true` is set
+- Check credentials exist: `~/.voicemode/credentials`
+- Re-authenticate: `voicemode connect auth login`
+- Enable debug logging: `VOICEMODE_CHANNEL_DEBUG=true`
+
+**No audio on caller's device**
+- Confirm you're signed into [app.voicemode.dev](https://app.voicemode.dev) with the same account
+- Check that Claude is using the `reply` tool (not a plain text response)
+
+**Plugin not found after install**
+- Verify Claude Code v2.1.80+ is installed: `claude --version`
+- Reinstall: `claude plugin install voicemode-channel@mbailey`
+
+**Hook timeout on startup**
+- The SessionStart hook installs npm dependencies — this may take a moment on first run
+- Subsequent starts use the cached install and are fast
 
 ## Development
 

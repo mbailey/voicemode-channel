@@ -62,7 +62,7 @@ if (process.env.VOICEMODE_CHANNEL_ENABLED !== 'true') {
 }
 
 const CHANNEL_NAME = 'voicemode-channel'
-const CHANNEL_VERSION = '0.1.0'
+const CHANNEL_VERSION = '0.1.4'
 
 const INSTRUCTIONS = [
   'Events from VoiceMode appear as <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>.',
@@ -209,8 +209,8 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const voice = args?.voice as string | undefined
-  const wait_for_response = args?.wait_for_response as boolean | undefined
+  const voice = typeof args?.voice === 'string' ? args.voice : undefined
+  const wait_for_response = typeof args?.wait_for_response === 'boolean' ? args.wait_for_response : undefined
 
   // Check gateway connection
   if (!gateway || gateway.state !== 'connected') {
@@ -270,7 +270,7 @@ function handle_profile_tool(args: Record<string, unknown> | undefined) {
   if (typeof args.display_name === 'string') currentProfile.display_name = args.display_name
   if (typeof args.context === 'string') currentProfile.context = args.context
   if (typeof args.voice === 'string') currentProfile.voice = args.voice
-  if (typeof args.presence === 'string') currentProfile.presence = args.presence
+  if (args.presence === 'available' || args.presence === 'busy' || args.presence === 'away') currentProfile.presence = args.presence
 
   log(`Profile updated: ${JSON.stringify(currentProfile)}`)
 
@@ -382,6 +382,12 @@ function start_gateway(): void {
       return
     }
 
+    const MAX_TRANSCRIPT_LENGTH = 10000
+    if (text.length > MAX_TRANSCRIPT_LENGTH) {
+      log(`Truncating transcript from ${text.length} to ${MAX_TRANSCRIPT_LENGTH} chars`)
+    }
+    const safe_text = text.slice(0, MAX_TRANSCRIPT_LENGTH)
+
     // Caller identity: use "from" field if available, fall back to userId
     const caller = typeof from === 'string' && from.length > 0
       ? from
@@ -394,9 +400,9 @@ function start_gateway(): void {
       ? user_id
       : undefined
 
-    log(`Received voice event: from="${caller}" text="${truncate(text.trim(), 80)}"`)
+    log(`Received voice event: from="${caller}" text="${truncate(safe_text.trim(), 80)}"`)
 
-    push_voice_event(caller, text.trim(), device_id).catch((err: unknown) => {
+    push_voice_event(caller, safe_text.trim(), device_id).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
       log(`Error pushing voice event to channel: ${message}`)
     })

@@ -8,7 +8,14 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [0.1.4] - 2026-03-24
 
-## [0.1.3] - 2026-03-24
+### Added
+- Session ID (`session_id`) included in `capabilities_update` for multi-session coexistence
+
+### Fixed
+- **Security:** Replace `execSync` with `execFileSync` in `get_project_context` -- eliminates shell injection surface
+- **Security:** Add WebSocket `maxPayload` limit (1 MB) -- prevents memory exhaustion from oversized payloads
+- **Reliability:** Heartbeat liveness detection -- force-close WebSocket after 60s silence, triggers reconnect
+- **Reliability:** Guard against concurrent `start()` calls; cancellable backoff sleep for prompt shutdown
 
 ## [0.1.3] - 2026-03-24
 
@@ -27,6 +34,10 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 - Refactored tool handlers into separate functions (handle_reply_tool, handle_profile_tool)
 
 ## [0.1.2] - 2026-03-23
+
+### Added
+- External message prefix on channel-delivered transcripts -- prompt injection mitigation
+- Load `voicemode.env` for config; fix plugin path resolution
 
 ## [0.1.1] - 2026-03-23
 

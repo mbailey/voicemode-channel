@@ -16,7 +16,7 @@
 import WebSocket from 'ws'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { hostname } from 'node:os'
 import { join, basename } from 'node:path'
@@ -31,7 +31,7 @@ export interface ProfileData {
   display_name: string
   context: string | null
   voice: string | null
-  presence: string
+  presence: 'available' | 'busy' | 'away'
 }
 
 // ---------------------------------------------------------------------------
@@ -45,8 +45,10 @@ const CREDENTIALS_FILE = join(homedir(), '.voicemode', 'credentials')
 const TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
 const HEARTBEAT_INTERVAL_MS = 25_000
+const HEARTBEAT_LIVENESS_TIMEOUT_MS = 60_000 // Force-close if no pong received within this window
 const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
+const MAX_PAYLOAD_BYTES = 1_048_576 // 1 MB -- reject oversized messages to prevent memory exhaustion
 
 // ---------------------------------------------------------------------------
 // Project context helpers
@@ -60,7 +62,7 @@ const MAX_RETRY_DELAY_MS = 60_000
 export function get_project_context(cwd: string): string | null {
   try {
     // Try git remote origin URL first (most specific)
-    const remote_url = execSync('git remote get-url origin 2>/dev/null', { cwd, encoding: 'utf8' }).trim()
+    const remote_url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
     if (remote_url) {
       // Extract repo name from URL: https://github.com/user/repo.git -> repo
       const repo_name = basename(remote_url).replace(/\.git$/, '')
@@ -207,9 +209,13 @@ export class GatewayClient extends EventEmitter {
   private _session_id: string | null = null
   private readonly _agent_session_id: string = process.env.CLAUDE_SESSION_ID ?? randomUUID()
   private _heartbeat_timer: ReturnType<typeof setInterval> | null = null
+  private _last_pong_at = 0
   private _retry_delay_ms = INITIAL_RETRY_DELAY_MS
   private _reconnect_count = 0
   private _shutting_down = false
+  private _running = false
+  private _sleep_resolve: (() => void) | null = null
+  private _sleep_timer: ReturnType<typeof setTimeout> | null = null
   private _log: (msg: string) => void
   private _profile: ProfileData | undefined
 
@@ -240,6 +246,8 @@ export class GatewayClient extends EventEmitter {
    */
   async start(): Promise<void> {
     if (this._shutting_down) return
+    if (this._running) return
+    this._running = true
     this._set_state('connecting')
     this._connection_loop()
   }
@@ -272,6 +280,7 @@ export class GatewayClient extends EventEmitter {
    */
   async shutdown(): Promise<void> {
     this._shutting_down = true
+    this._cancel_sleep()
     this._stop_heartbeat()
     if (this._ws) {
       try {
@@ -290,21 +299,25 @@ export class GatewayClient extends EventEmitter {
   // -----------------------------------------------------------------------
 
   private async _connection_loop(): Promise<void> {
-    while (!this._shutting_down) {
-      try {
-        await this._connect_once()
-      } catch {
-        // Error handled inside _connect_once
+    try {
+      while (!this._shutting_down) {
+        try {
+          await this._connect_once()
+        } catch {
+          // Error handled inside _connect_once
+        }
+
+        if (this._shutting_down) break
+
+        // Reconnect with exponential backoff
+        this._reconnect_count++
+        this._set_state('reconnecting')
+        this._log(`Reconnecting in ${this._retry_delay_ms / 1000}s (attempt ${this._reconnect_count})...`)
+        await this._sleep(this._retry_delay_ms)
+        this._retry_delay_ms = Math.min(this._retry_delay_ms * 2, MAX_RETRY_DELAY_MS)
       }
-
-      if (this._shutting_down) break
-
-      // Reconnect with exponential backoff
-      this._reconnect_count++
-      this._set_state('reconnecting')
-      this._log(`Reconnecting in ${this._retry_delay_ms / 1000}s (attempt ${this._reconnect_count})...`)
-      await this._sleep(this._retry_delay_ms)
-      this._retry_delay_ms = Math.min(this._retry_delay_ms * 2, MAX_RETRY_DELAY_MS)
+    } finally {
+      this._running = false
     }
   }
 
@@ -323,6 +336,7 @@ export class GatewayClient extends EventEmitter {
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(WS_URL, {
         headers: { Authorization: `Bearer ${token}` },
+        maxPayload: MAX_PAYLOAD_BYTES,
       })
 
       let authenticated = false
@@ -335,8 +349,11 @@ export class GatewayClient extends EventEmitter {
       ws.on('message', (data: WebSocket.Data) => {
         const raw = data.toString()
 
-        // Ignore auto-response pong messages
-        if (raw === 'pong') return
+        // Ignore auto-response pong messages -- record timestamp for liveness detection
+        if (raw === 'pong') {
+          this._last_pong_at = Date.now()
+          return
+        }
 
         let msg: Record<string, unknown>
         try {
@@ -367,7 +384,7 @@ export class GatewayClient extends EventEmitter {
           this._set_state('connected')
           this.emit('connected')
         } else if (msg_type === 'heartbeat_ack' || msg_type === 'heartbeat') {
-          // Silently handle heartbeat responses
+          this._last_pong_at = Date.now()
         } else if (msg_type === 'error') {
           const error_msg = (msg.message as string) ?? 'Unknown error'
           const error_code = (msg.code as string) ?? ''
@@ -407,7 +424,7 @@ export class GatewayClient extends EventEmitter {
       type: 'ready',
       device: {
         platform: 'channel-server',
-        appVersion: '0.1.0',
+        appVersion: '0.1.4',
         name: `channel@${hostname()}`,
       },
     }
@@ -439,7 +456,6 @@ export class GatewayClient extends EventEmitter {
       host,
       display_name,
       presence,
-      project_path,
     }
     if (context) {
       user_entry.context = context
@@ -461,8 +477,16 @@ export class GatewayClient extends EventEmitter {
 
   private _start_heartbeat(): void {
     this._stop_heartbeat()
+    this._last_pong_at = Date.now()
     this._heartbeat_timer = setInterval(() => {
       if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        // Check liveness -- if no pong received within timeout, force-close (half-open TCP)
+        const silent_ms = Date.now() - this._last_pong_at
+        if (silent_ms > HEARTBEAT_LIVENESS_TIMEOUT_MS) {
+          this._log(`No heartbeat response in ${Math.round(silent_ms / 1000)}s -- force-closing (half-open TCP suspected)`)
+          this._ws.terminate()
+          return
+        }
         // Send literal "ping" text -- auto-responded by DO runtime without waking it
         this._ws.send('ping')
       }
@@ -488,12 +512,24 @@ export class GatewayClient extends EventEmitter {
 
   private _sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms)
-      // Allow the timer to not keep the process alive during shutdown
-      if (this._shutting_down) {
-        clearTimeout(timer)
+      this._sleep_resolve = resolve
+      this._sleep_timer = setTimeout(() => {
+        this._sleep_resolve = null
+        this._sleep_timer = null
         resolve()
-      }
+      }, ms)
     })
+  }
+
+  private _cancel_sleep(): void {
+    if (this._sleep_timer !== null) {
+      clearTimeout(this._sleep_timer)
+      this._sleep_timer = null
+    }
+    if (this._sleep_resolve !== null) {
+      const resolve = this._sleep_resolve
+      this._sleep_resolve = null
+      resolve()
+    }
   }
 }
