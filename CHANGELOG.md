@@ -6,18 +6,29 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [0.1.6] - 2026-03-25
 
+### Added
+- **Profile voice as reply default** -- reply tool now uses the agent's profile voice when no voice parameter is specified, so agents keep their configured voice identity
+
+### Fixed
+- **Security:** Replace `execSync` with `execFileSync` in `get_project_context` -- eliminates shell injection surface
+- **Security:** Add WebSocket `maxPayload` limit (1 MB) -- prevents memory exhaustion from oversized payloads
+- **Security:** Add transcript length limit and remove `project_path` from `capabilities_update`
+- **Reliability:** Heartbeat liveness detection -- force-close WebSocket after 60s silence, triggers reconnect
+- **Reliability:** Guard against concurrent `start()` calls; cancellable backoff sleep for prompt shutdown
+
+### Changed
+- Tighten TypeScript types and update `.gitignore`
+- Plugin packaging robustness and documentation fixes
+
 ## [0.1.5] - 2026-03-25
+
+### Fixed
+- **Pre-flight checks in start.sh** -- validates Node.js version, npm packages, and required env vars before starting, with clear error messages
 
 ## [0.1.4] - 2026-03-24
 
 ### Added
 - Session ID (`session_id`) included in `capabilities_update` for multi-session coexistence
-
-### Fixed
-- **Security:** Replace `execSync` with `execFileSync` in `get_project_context` -- eliminates shell injection surface
-- **Security:** Add WebSocket `maxPayload` limit (1 MB) -- prevents memory exhaustion from oversized payloads
-- **Reliability:** Heartbeat liveness detection -- force-close WebSocket after 60s silence, triggers reconnect
-- **Reliability:** Guard against concurrent `start()` calls; cancellable backoff sleep for prompt shutdown
 
 ## [0.1.3] - 2026-03-24
 

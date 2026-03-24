@@ -4,6 +4,8 @@ A Claude Code plugin that enables inbound voice calls via [VoiceMode Connect](ht
 
 Users speak on their phone or web app, and their messages arrive in your Claude Code session as channel events. Claude responds using the reply tool, and the response is spoken aloud on the caller's device.
 
+![VoiceMode Connect web app showing a voice conversation with Claude Code](assets/screenshot.png)
+
 ```
 User speaks on phone/web -> VoiceMode gateway -> Channel plugin -> Claude Code
                                                                        |
