@@ -45,6 +45,7 @@ const CREDENTIALS_FILE = join(homedir(), '.voicemode', 'credentials')
 const TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
 const HEARTBEAT_INTERVAL_MS = 25_000
+const HEARTBEAT_LIVENESS_TIMEOUT_MS = 60_000 // Force-close if no pong received within this window
 const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
 const MAX_PAYLOAD_BYTES = 1_048_576 // 1 MB -- reject oversized messages to prevent memory exhaustion
@@ -208,6 +209,7 @@ export class GatewayClient extends EventEmitter {
   private _session_id: string | null = null
   private readonly _agent_session_id: string = process.env.CLAUDE_SESSION_ID ?? randomUUID()
   private _heartbeat_timer: ReturnType<typeof setInterval> | null = null
+  private _last_pong_at = 0
   private _retry_delay_ms = INITIAL_RETRY_DELAY_MS
   private _reconnect_count = 0
   private _shutting_down = false
@@ -337,8 +339,11 @@ export class GatewayClient extends EventEmitter {
       ws.on('message', (data: WebSocket.Data) => {
         const raw = data.toString()
 
-        // Ignore auto-response pong messages
-        if (raw === 'pong') return
+        // Ignore auto-response pong messages -- record timestamp for liveness detection
+        if (raw === 'pong') {
+          this._last_pong_at = Date.now()
+          return
+        }
 
         let msg: Record<string, unknown>
         try {
@@ -369,7 +374,7 @@ export class GatewayClient extends EventEmitter {
           this._set_state('connected')
           this.emit('connected')
         } else if (msg_type === 'heartbeat_ack' || msg_type === 'heartbeat') {
-          // Silently handle heartbeat responses
+          this._last_pong_at = Date.now()
         } else if (msg_type === 'error') {
           const error_msg = (msg.message as string) ?? 'Unknown error'
           const error_code = (msg.code as string) ?? ''
@@ -463,8 +468,16 @@ export class GatewayClient extends EventEmitter {
 
   private _start_heartbeat(): void {
     this._stop_heartbeat()
+    this._last_pong_at = Date.now()
     this._heartbeat_timer = setInterval(() => {
       if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        // Check liveness -- if no pong received within timeout, force-close (half-open TCP)
+        const silent_ms = Date.now() - this._last_pong_at
+        if (silent_ms > HEARTBEAT_LIVENESS_TIMEOUT_MS) {
+          this._log(`No heartbeat response in ${Math.round(silent_ms / 1000)}s -- force-closing (half-open TCP suspected)`)
+          this._ws.terminate()
+          return
+        }
         // Send literal "ping" text -- auto-responded by DO runtime without waking it
         this._ws.send('ping')
       }
