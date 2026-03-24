@@ -47,6 +47,7 @@ const TOKEN_EXPIRY_BUFFER_SECONDS = 60
 const HEARTBEAT_INTERVAL_MS = 25_000
 const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
+const MAX_PAYLOAD_BYTES = 1_048_576 // 1 MB -- reject oversized messages to prevent memory exhaustion
 
 // ---------------------------------------------------------------------------
 // Project context helpers
@@ -323,6 +324,7 @@ export class GatewayClient extends EventEmitter {
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(WS_URL, {
         headers: { Authorization: `Bearer ${token}` },
+        maxPayload: MAX_PAYLOAD_BYTES,
       })
 
       let authenticated = false
