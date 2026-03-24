@@ -16,7 +16,7 @@
 import WebSocket from 'ws'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { hostname } from 'node:os'
 import { join, basename } from 'node:path'
@@ -60,7 +60,7 @@ const MAX_RETRY_DELAY_MS = 60_000
 export function get_project_context(cwd: string): string | null {
   try {
     // Try git remote origin URL first (most specific)
-    const remote_url = execSync('git remote get-url origin 2>/dev/null', { cwd, encoding: 'utf8' }).trim()
+    const remote_url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
     if (remote_url) {
       // Extract repo name from URL: https://github.com/user/repo.git -> repo
       const repo_name = basename(remote_url).replace(/\.git$/, '')
