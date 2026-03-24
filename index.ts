@@ -209,7 +209,7 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const voice = typeof args?.voice === 'string' ? args.voice : undefined
+  const voice = typeof args?.voice === 'string' ? args.voice : (currentProfile.voice || undefined)
   const wait_for_response = typeof args?.wait_for_response === 'boolean' ? args.wait_for_response : undefined
 
   // Check gateway connection
