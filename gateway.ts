@@ -456,7 +456,6 @@ export class GatewayClient extends EventEmitter {
       host,
       display_name,
       presence,
-      project_path,
     }
     if (context) {
       user_entry.context = context

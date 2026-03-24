@@ -382,6 +382,12 @@ function start_gateway(): void {
       return
     }
 
+    const MAX_TRANSCRIPT_LENGTH = 10000
+    if (text.length > MAX_TRANSCRIPT_LENGTH) {
+      log(`Truncating transcript from ${text.length} to ${MAX_TRANSCRIPT_LENGTH} chars`)
+    }
+    const safe_text = text.slice(0, MAX_TRANSCRIPT_LENGTH)
+
     // Caller identity: use "from" field if available, fall back to userId
     const caller = typeof from === 'string' && from.length > 0
       ? from
@@ -394,9 +400,9 @@ function start_gateway(): void {
       ? user_id
       : undefined
 
-    log(`Received voice event: from="${caller}" text="${truncate(text.trim(), 80)}"`)
+    log(`Received voice event: from="${caller}" text="${truncate(safe_text.trim(), 80)}"`)
 
-    push_voice_event(caller, text.trim(), device_id).catch((err: unknown) => {
+    push_voice_event(caller, safe_text.trim(), device_id).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
       log(`Error pushing voice event to channel: ${message}`)
     })
