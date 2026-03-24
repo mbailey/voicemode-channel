@@ -213,6 +213,9 @@ export class GatewayClient extends EventEmitter {
   private _retry_delay_ms = INITIAL_RETRY_DELAY_MS
   private _reconnect_count = 0
   private _shutting_down = false
+  private _running = false
+  private _sleep_resolve: (() => void) | null = null
+  private _sleep_timer: ReturnType<typeof setTimeout> | null = null
   private _log: (msg: string) => void
   private _profile: ProfileData | undefined
 
@@ -243,6 +246,8 @@ export class GatewayClient extends EventEmitter {
    */
   async start(): Promise<void> {
     if (this._shutting_down) return
+    if (this._running) return
+    this._running = true
     this._set_state('connecting')
     this._connection_loop()
   }
@@ -275,6 +280,7 @@ export class GatewayClient extends EventEmitter {
    */
   async shutdown(): Promise<void> {
     this._shutting_down = true
+    this._cancel_sleep()
     this._stop_heartbeat()
     if (this._ws) {
       try {
@@ -293,21 +299,25 @@ export class GatewayClient extends EventEmitter {
   // -----------------------------------------------------------------------
 
   private async _connection_loop(): Promise<void> {
-    while (!this._shutting_down) {
-      try {
-        await this._connect_once()
-      } catch {
-        // Error handled inside _connect_once
+    try {
+      while (!this._shutting_down) {
+        try {
+          await this._connect_once()
+        } catch {
+          // Error handled inside _connect_once
+        }
+
+        if (this._shutting_down) break
+
+        // Reconnect with exponential backoff
+        this._reconnect_count++
+        this._set_state('reconnecting')
+        this._log(`Reconnecting in ${this._retry_delay_ms / 1000}s (attempt ${this._reconnect_count})...`)
+        await this._sleep(this._retry_delay_ms)
+        this._retry_delay_ms = Math.min(this._retry_delay_ms * 2, MAX_RETRY_DELAY_MS)
       }
-
-      if (this._shutting_down) break
-
-      // Reconnect with exponential backoff
-      this._reconnect_count++
-      this._set_state('reconnecting')
-      this._log(`Reconnecting in ${this._retry_delay_ms / 1000}s (attempt ${this._reconnect_count})...`)
-      await this._sleep(this._retry_delay_ms)
-      this._retry_delay_ms = Math.min(this._retry_delay_ms * 2, MAX_RETRY_DELAY_MS)
+    } finally {
+      this._running = false
     }
   }
 
@@ -503,12 +513,24 @@ export class GatewayClient extends EventEmitter {
 
   private _sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms)
-      // Allow the timer to not keep the process alive during shutdown
-      if (this._shutting_down) {
-        clearTimeout(timer)
+      this._sleep_resolve = resolve
+      this._sleep_timer = setTimeout(() => {
+        this._sleep_resolve = null
+        this._sleep_timer = null
         resolve()
-      }
+      }, ms)
     })
+  }
+
+  private _cancel_sleep(): void {
+    if (this._sleep_timer !== null) {
+      clearTimeout(this._sleep_timer)
+      this._sleep_timer = null
+    }
+    if (this._sleep_resolve !== null) {
+      const resolve = this._sleep_resolve
+      this._sleep_resolve = null
+      resolve()
+    }
   }
 }
