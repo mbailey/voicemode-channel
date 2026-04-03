@@ -20,9 +20,12 @@ claude plugin install voicemode-channel@mbailey
 
 ## Prerequisites
 
-- Node.js 20+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) v2.1.80+ -- `claude --version` to check
+- [VoiceMode CLI](https://pypi.org/project/voice-mode/) -- `pip install voice-mode` (or `pipx install voice-mode`)
+- [VoiceMode Connect account](https://app.voicemode.dev) -- sign in with Google or GitHub
 - VoiceMode Connect credentials (`~/.voicemode/credentials`)
   - Run `voicemode connect auth login` to authenticate
+- Node.js 20+
 
 ## Usage
 
