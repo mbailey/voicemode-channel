@@ -1,6 +1,6 @@
 # voicemode-channel Makefile
 
-.PHONY: help build clean test publish release
+.PHONY: help build clean test run inspect shell publish release
 
 help:
 	@echo "Usage: make [target]"
@@ -8,7 +8,10 @@ help:
 	@echo "Targets:"
 	@echo "  build     Compile TypeScript to dist/"
 	@echo "  clean     Remove build artifacts"
+	@echo "  run       Build and run MCP server (stdio)"
 	@echo "  test      Build and test from tarball"
+	@echo "  inspect   Open MCP Inspector web UI"
+	@echo "  shell     Open mcptools interactive shell"
 	@echo "  publish   Build and publish to npm"
 	@echo "  release   Bump version, build, publish, and release plugin"
 	@echo "  help      Show this help"
@@ -18,6 +21,23 @@ build:
 
 clean:
 	rm -rf dist/ *.tgz
+
+run: build
+	node dist/index.js
+
+inspect: build
+	npx @modelcontextprotocol/inspector node dist/index.js
+
+shell: build ## Interactive MCP shell (brew install mcptools)
+	mcptools shell node dist/index.js
+# Shell examples:
+#   tools                              List available tools
+#   status                             Check connection state
+#   reply {"text":"hello from cli"}    Send a voice reply
+#   profile                            View agent profile
+#   profile {"voice":"af_sky"}         Update profile fields
+#   /h                                 Show all commands
+#   /q                                 Quit
 
 test: clean build
 	@echo "Packing and testing..."

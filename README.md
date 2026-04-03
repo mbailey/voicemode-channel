@@ -114,10 +114,35 @@ cd voicemode-channel
 npm install
 
 # Build
-npm run build
+make build
 
 # Test with --plugin-dir
 VOICEMODE_CHANNEL_ENABLED=true claude --plugin-dir . --dangerously-load-development-channels server:voicemode-channel
+```
+
+### Testing with mcptools
+
+[mcptools](https://github.com/f/mcptools) provides an interactive shell for testing MCP servers (`brew install mcptools`):
+
+```bash
+make shell
+```
+
+Example session:
+
+```
+mcp > tools                              # List available tools
+mcp > status                             # Check connection state
+mcp > reply {"text":"hello from cli"}    # Send a voice reply
+mcp > profile                            # View agent profile
+mcp > profile {"voice":"af_sky"}         # Update profile fields
+mcp > /q                                 # Quit
+```
+
+The MCP Inspector web UI is also available:
+
+```bash
+make inspect
 ```
 
 ## Status
