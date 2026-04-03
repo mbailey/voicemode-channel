@@ -4,6 +4,8 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-04
+
 ### Added
 - **Built-in Auth0 PKCE login** -- native login flow, no Python voicemode dependency needed (VMC-448)
 - **CLI auth subcommands** -- `voicemode-channel auth login/logout/status` for credential management
