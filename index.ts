@@ -19,12 +19,14 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient, get_project_context } from './gateway.js'
 import type { ProfileData } from './gateway.js'
+import { login } from './auth.js'
+import { load_credentials, is_expired, CREDENTIALS_FILE, get_valid_token } from './credentials.js'
 
 // ---------------------------------------------------------------------------
 // Load ~/.voicemode/voicemode.env (simple dotenv parsing)
@@ -47,6 +49,73 @@ try {
   }
 } catch {
   // voicemode.env not found -- that's fine, use env vars only
+}
+
+// ---------------------------------------------------------------------------
+// CLI subcommand routing
+// Auth subcommands run standalone -- no MCP server, no VOICEMODE_CHANNEL_ENABLED gate.
+// ---------------------------------------------------------------------------
+
+const cli_args = process.argv.slice(2)
+
+if (cli_args[0] === 'auth') {
+  const stderr_log = (msg: string) => process.stderr.write(`${msg}\n`)
+
+  switch (cli_args[1]) {
+    case 'login':
+      try {
+        await login(stderr_log)
+        console.log('Login successful.')
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`Login failed: ${message}`)
+        process.exit(1)
+      }
+      process.exit(0)
+      break
+
+    case 'logout':
+      try {
+        unlinkSync(CREDENTIALS_FILE)
+        console.log('Credentials removed.')
+      } catch {
+        console.log('No credentials to remove.')
+      }
+      process.exit(0)
+      break
+
+    case 'status': {
+      const creds = load_credentials()
+      if (!creds) {
+        console.log('Not logged in.')
+        console.log('Run: voicemode-channel auth login')
+        process.exit(1)
+      }
+
+      const expired = is_expired(creds)
+      const expires_date = new Date(creds.expires_at * 1000)
+
+      console.log('Logged in.')
+      console.log(`  Token type:  ${creds.token_type}`)
+      console.log(`  Expires at:  ${expires_date.toLocaleString()}`)
+      console.log(`  Status:      ${expired ? 'EXPIRED' : 'valid'}`)
+      console.log(`  Refresh:     ${creds.refresh_token ? 'available' : 'none'}`)
+
+      if (creds.user_info) {
+        const ui = creds.user_info
+        if (ui.name) console.log(`  Name:        ${ui.name}`)
+        if (ui.email) console.log(`  Email:       ${ui.email}`)
+      }
+
+      process.exit(0)
+      break
+    }
+
+    default:
+      console.error(`Unknown auth subcommand: ${cli_args[1] ?? '(none)'}`)
+      console.error('Usage: voicemode-channel auth [login|logout|status]')
+      process.exit(1)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +508,20 @@ process.on('SIGINT', () => { shutdown('SIGINT') })
 
 async function main(): Promise<void> {
   log(`Starting ${CHANNEL_NAME} v${CHANNEL_VERSION}`)
+
+  // Check credentials and auto-login if needed
+  const token = await get_valid_token((msg: string) => log(msg))
+  if (!token) {
+    log('No valid credentials -- starting login flow...')
+    try {
+      await login((msg: string) => log(msg))
+      log('Authentication complete')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      log(`Login failed: ${message}`, 'ERROR')
+      process.exit(1)
+    }
+  }
 
   // Start MCP stdio transport (communicates with Claude Code)
   const transport = new StdioServerTransport()

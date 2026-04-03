@@ -54,4 +54,4 @@ if [ ! -f "$CREDS_FILE" ]; then
 fi
 
 echo "[voicemode-channel] Starting channel server (node $(node -v))..." >&2
-exec "$TSX" "${PLUGIN_ROOT}/index.ts"
+exec "$TSX" "${PLUGIN_ROOT}/index.ts" "$@"
