@@ -3,14 +3,26 @@
   "version": "0.1.4",
   "description": "VoiceMode Channel - inbound voice calls to Claude Code via VoiceMode Connect",
   "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "voicemode-channel": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "tsx": "^4.19.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
 }
