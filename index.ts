@@ -42,6 +42,8 @@ try {
     if (eq < 1) continue
     const key = trimmed.slice(0, eq).trim()
     const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
+    // Only allow VOICEMODE_ prefixed keys to prevent env var injection
+    if (!key.startsWith('VOICEMODE_') && !key.startsWith('CLAUDE_')) continue
     // Don't override existing env vars
     if (!(key in process.env)) {
       process.env[key] = value
