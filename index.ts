@@ -43,7 +43,7 @@ try {
     const key = trimmed.slice(0, eq).trim()
     const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
     // Only allow VOICEMODE_ prefixed keys to prevent env var injection
-    if (!key.startsWith('VOICEMODE_') && !key.startsWith('CLAUDE_')) continue
+    if (!key.startsWith('VOICEMODE_')) continue
     // Don't override existing env vars
     if (!(key in process.env)) {
       process.env[key] = value
@@ -407,11 +407,12 @@ function handle_profile_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  // Merge provided fields into current profile
-  if (typeof args.name === 'string') currentProfile.name = args.name
-  if (typeof args.display_name === 'string') currentProfile.display_name = args.display_name
-  if (typeof args.context === 'string') currentProfile.context = args.context
-  if (typeof args.voice === 'string') currentProfile.voice = args.voice
+  // Merge provided fields into current profile (cap at 200 chars to prevent abuse)
+  const cap = (s: string) => s.slice(0, 200)
+  if (typeof args.name === 'string') currentProfile.name = cap(args.name)
+  if (typeof args.display_name === 'string') currentProfile.display_name = cap(args.display_name)
+  if (typeof args.context === 'string') currentProfile.context = cap(args.context)
+  if (typeof args.voice === 'string') currentProfile.voice = cap(args.voice)
   if (args.presence === 'available' || args.presence === 'busy' || args.presence === 'away') currentProfile.presence = args.presence
 
   log(`Profile updated: ${JSON.stringify(currentProfile)}`)
