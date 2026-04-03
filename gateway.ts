@@ -314,7 +314,7 @@ export class GatewayClient extends EventEmitter {
       type: 'ready',
       device: {
         platform: 'channel-server',
-        appVersion: '0.2.0',
+        appVersion: '0.2.1',
         name: `channel@${hostname()}`,
       },
     }

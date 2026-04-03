@@ -4,6 +4,12 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-04
+
+### Fixed
+- Version display now reads from package.json instead of hardcoded string
+- Removed dead `createConnection` import from auth.ts
+
 ## [0.2.0] - 2026-04-04
 
 ### Added
