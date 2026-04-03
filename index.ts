@@ -135,7 +135,15 @@ if (process.env.VOICEMODE_CHANNEL_ENABLED !== 'true') {
 const WS_URL = process.env.VOICEMODE_CONNECT_WS_URL ?? 'wss://voicemode.dev/ws'
 
 const CHANNEL_NAME = 'voicemode-channel'
-const CHANNEL_VERSION = '0.1.4'
+// Read version from package.json at runtime to avoid hardcoded version drift
+const CHANNEL_VERSION = (() => {
+  try {
+    const pkg_path = new URL('../package.json', import.meta.url)
+    return JSON.parse(readFileSync(pkg_path, 'utf8')).version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 
 const INSTRUCTIONS = [
   'Events from VoiceMode appear as <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>.',
