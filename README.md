@@ -14,15 +14,39 @@ User hears TTS response  <- Channel reply tool <----------------------+
 
 ## Install
 
+### Claude Code plugin
+
 ```bash
 claude plugin install voicemode-channel@mbailey
+```
+
+### Standalone (any MCP host)
+
+```bash
+npx voicemode-channel
 ```
 
 ## Prerequisites
 
 - Node.js 20+
 - VoiceMode Connect credentials (`~/.voicemode/credentials`)
-  - Run `voicemode connect auth login` to authenticate
+  - Run `voicemode-channel auth login` to authenticate
+
+## Auth
+
+Manage your VoiceMode Connect credentials:
+
+```bash
+voicemode-channel auth login    # Authenticate via browser (PKCE flow)
+voicemode-channel auth logout   # Remove stored credentials
+voicemode-channel auth status   # Show current auth state
+```
+
+Or via npx:
+
+```bash
+npx voicemode-channel auth login
+```
 
 ## Usage
 
@@ -65,8 +89,8 @@ Channel events appear in Claude's session as:
 
 **Channel not connecting**
 - Ensure `VOICEMODE_CHANNEL_ENABLED=true` is set
-- Check credentials exist: `~/.voicemode/credentials`
-- Re-authenticate: `voicemode connect auth login`
+- Check credentials exist: `voicemode-channel auth status`
+- Re-authenticate: `voicemode-channel auth login`
 - Enable debug logging: `VOICEMODE_CHANNEL_DEBUG=true`
 
 **No audio on caller's device**
@@ -78,7 +102,7 @@ Channel events appear in Claude's session as:
 - Reinstall: `claude plugin install voicemode-channel@mbailey`
 
 **Hook timeout on startup**
-- The SessionStart hook installs npm dependencies — this may take a moment on first run
+- The SessionStart hook installs npm dependencies -- this may take a moment on first run
 - Subsequent starts use the cached install and are fast
 
 ## Development
@@ -88,6 +112,9 @@ Channel events appear in Claude's session as:
 git clone https://github.com/mbailey/voicemode-channel.git
 cd voicemode-channel
 npm install
+
+# Build
+npm run build
 
 # Test with --plugin-dir
 VOICEMODE_CHANNEL_ENABLED=true claude --plugin-dir . --dangerously-load-development-channels server:voicemode-channel
