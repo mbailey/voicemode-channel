@@ -13,7 +13,6 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import { platform } from 'node:os'
-import { createConnection } from 'node:net'
 
 import {
   AUTH0_DOMAIN,
