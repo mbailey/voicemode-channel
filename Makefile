@@ -1,6 +1,6 @@
 # voicemode-channel Makefile
 
-.PHONY: help build clean test run inspect shell publish release
+.PHONY: help build clean test run inspect shell audit publish release
 
 help:
 	@echo "Usage: make [target]"
@@ -12,6 +12,7 @@ help:
 	@echo "  test      Build and test from tarball"
 	@echo "  inspect   Open MCP Inspector web UI"
 	@echo "  shell     Open mcptools interactive shell"
+	@echo "  audit     Run npm security audit"
 	@echo "  publish   Build and publish to npm"
 	@echo "  release   Bump version, build, publish, and release plugin"
 	@echo "  help      Show this help"
@@ -49,6 +50,9 @@ test: clean build
 		echo "" && \
 		echo "Test passed."
 	rm -f voicemode-channel-*.tgz
+
+audit:
+	npm audit --audit-level=high
 
 publish: clean build
 	@echo "Publishing to npm..."
