@@ -54,7 +54,7 @@ test: clean build
 audit:
 	npm audit --audit-level=high
 
-publish: clean build
+publish: clean audit build
 	@echo "Publishing to npm..."
 	@echo ""
 	@echo "Current version: $$(node -p 'require("./package.json").version')"
