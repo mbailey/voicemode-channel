@@ -38,6 +38,9 @@ export interface ProfileData {
 // ---------------------------------------------------------------------------
 
 const WS_URL = process.env.VOICEMODE_CONNECT_WS_URL ?? 'wss://voicemode.dev/ws'
+if (WS_URL.startsWith('ws://')) {
+  process.stderr.write('[voicemode-channel] WARNING: Gateway URL uses unencrypted ws:// -- tokens will be sent in cleartext\n')
+}
 
 const HEARTBEAT_INTERVAL_MS = 25_000
 const HEARTBEAT_LIVENESS_TIMEOUT_MS = 60_000 // Force-close if no pong received within this window
@@ -335,8 +338,8 @@ export class GatewayClient extends EventEmitter {
     const display_name = profile?.display_name ?? process.env.VOICEMODE_AGENT_DISPLAY_NAME ?? 'Claude Code'
     const presence = profile?.presence ?? 'available'
     const host = hostname()
-    const project_path = process.cwd()
-    const context = profile?.context ?? get_project_context(project_path)
+    const project_path = basename(process.cwd())  // Send basename only -- don't leak full filesystem path
+    const context = profile?.context ?? get_project_context(process.cwd())
 
     const user_entry: Record<string, unknown> = {
       name: agent_name,
