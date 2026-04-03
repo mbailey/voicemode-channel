@@ -130,6 +130,8 @@ if (process.env.VOICEMODE_CHANNEL_ENABLED !== 'true') {
   process.exit(0)
 }
 
+const WS_URL = process.env.VOICEMODE_CONNECT_WS_URL ?? 'wss://voicemode.dev/ws'
+
 const CHANNEL_NAME = 'voicemode-channel'
 const CHANNEL_VERSION = '0.1.4'
 
@@ -211,6 +213,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'status',
+        description:
+          'Check the current status of the VoiceMode channel. ' +
+          'Returns connection state, gateway URL, session IDs, auth info, and current profile.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {},
+        },
+      },
+      {
         name: 'profile',
         description:
           'Get or update the agent profile. ' +
@@ -250,6 +262,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
 mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
 
+  if (name === 'status') {
+    return handle_status_tool()
+  }
+
   if (name === 'profile') {
     return handle_profile_tool(args as Record<string, unknown> | undefined)
   }
@@ -263,6 +279,61 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     isError: true,
   }
 })
+
+// ---------------------------------------------------------------------------
+// Tool handler: status
+// ---------------------------------------------------------------------------
+
+function handle_status_tool() {
+  const lines: string[] = []
+
+  // Connection state
+  const state = gateway?.state ?? 'disconnected'
+  lines.push(`Connection: ${state}`)
+  lines.push(`Gateway: ${WS_URL}`)
+
+  // Session IDs
+  const server_session = gateway?.session_id ?? 'none'
+  const agent_session = gateway?.agent_session_id ?? 'none'
+  lines.push(`Session: ${server_session} (server) / ${agent_session} (agent)`)
+
+  lines.push('')
+
+  // Auth info
+  const creds = load_credentials()
+  if (creds) {
+    const expired = is_expired(creds)
+    const expires_date = new Date(creds.expires_at * 1000)
+    const expires_str = expires_date.toISOString().slice(0, 16)
+
+    lines.push(`Auth: authenticated`)
+
+    const name = creds.user_info?.name as string | undefined
+    const email = creds.user_info?.email as string | undefined
+    if (name || email) {
+      const parts = [name, email ? `(${email})` : null].filter(Boolean).join(' ')
+      lines.push(`User: ${parts}`)
+    }
+
+    lines.push(`Token: ${expired ? 'expired' : 'valid'} (expires ${expires_str})`)
+  } else {
+    lines.push('Auth: not authenticated')
+  }
+
+  lines.push('')
+
+  // Profile
+  lines.push(`Profile: set`)
+  lines.push(`  Name: ${currentProfile.name}`)
+  lines.push(`  Display: ${currentProfile.display_name}`)
+  lines.push(`  Context: ${currentProfile.context ?? 'none'}`)
+  lines.push(`  Voice: ${currentProfile.voice ?? 'default'}`)
+  lines.push(`  Presence: ${currentProfile.presence}`)
+
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tool handler: reply
