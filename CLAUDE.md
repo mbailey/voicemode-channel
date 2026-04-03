@@ -2,11 +2,19 @@
 
 Claude Code channel plugin -- inbound voice calls via VoiceMode Connect.
 
+## Task Prefix
+
+Use **VMCH** for tasks in this repo (e.g., VMCH-2, VMCH-10). VMC is for voicemode-connect.
+
 ## Build
 
 ```bash
-npx tsc --noEmit    # Type check
-npm run build       # Not yet configured -- use tsc directly
+make build          # Compile TypeScript to dist/
+make test           # Build, pack, install from tarball, verify
+make audit          # npm security audit
+make publish        # Audit + build + npm publish
+make shell          # Interactive mcptools shell (brew install mcptools)
+make inspect        # MCP Inspector web UI
 ```
 
 ## Related Projects
