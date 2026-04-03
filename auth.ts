@@ -63,24 +63,27 @@ function generate_pkce_params(): PKCEParams {
 // Port selection
 // ---------------------------------------------------------------------------
 
-function is_port_available(port: number): Promise<boolean> {
+/**
+ * Try to listen on a port, resolving with the server if successful.
+ * Eliminates TOCTOU race by using listen() directly instead of checking first.
+ */
+function try_listen(server: ReturnType<typeof createServer>, port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const sock = createConnection({ host: '127.0.0.1', port })
-    sock.once('connect', () => { sock.destroy(); resolve(false) })
-    sock.once('error', () => { sock.destroy(); resolve(true) })
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') resolve(false)
+      else resolve(false)
+    })
+    server.listen(port, '127.0.0.1', () => resolve(true))
   })
-}
-
-async function find_available_port(): Promise<number | null> {
-  for (let port = CALLBACK_PORT_START; port <= CALLBACK_PORT_END; port++) {
-    if (await is_port_available(port)) return port
-  }
-  return null
 }
 
 // ---------------------------------------------------------------------------
 // Callback HTML page
 // ---------------------------------------------------------------------------
+
+function escape_html(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
 
 function callback_page(success: boolean, error_message = ''): string {
   const icon_bg = success ? '#3fb950' : '#f85149'
@@ -90,7 +93,7 @@ function callback_page(success: boolean, error_message = ''): string {
   const heading = success ? 'Authentication Successful' : 'Authentication Failed'
   const message = success
     ? 'You can close this window and return to the terminal.'
-    : (error_message ? `Error: ${error_message}` : 'Something went wrong.')
+    : (error_message ? `Error: ${escape_html(error_message)}` : 'Something went wrong.')
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -235,14 +238,24 @@ function build_authorize_url(redirect_uri: string, pkce: PKCEParams, state: stri
 // ---------------------------------------------------------------------------
 
 export async function login(log: (msg: string) => void): Promise<StoredCredentials> {
-  // Find available port
-  const port = await find_available_port()
-  if (port === null) {
+  // Create callback server and find an available port by trying to listen directly
+  // (eliminates TOCTOU race vs separate port-check-then-listen)
+  const server = createServer()
+  let port = 0
+  for (let p = CALLBACK_PORT_START; p <= CALLBACK_PORT_END; p++) {
+    if (await try_listen(server, p)) {
+      port = p
+      break
+    }
+  }
+  if (port === 0) {
     throw new Error(
       `No available ports in range ${CALLBACK_PORT_START}-${CALLBACK_PORT_END}. ` +
       'Please close applications using these ports and try again.',
     )
   }
+  // Server is now listening -- close it so we can re-create with request handler
+  server.close()
 
   // Generate PKCE parameters and state
   const pkce = generate_pkce_params()
@@ -254,7 +267,7 @@ export async function login(log: (msg: string) => void): Promise<StoredCredentia
 
   // Start callback server and wait for the authorization code
   const result = await new Promise<{ code: string; state: string | null } | null>((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const callback_server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://localhost:${port}`)
 
       if (url.pathname !== '/callback') {
@@ -295,10 +308,10 @@ export async function login(log: (msg: string) => void): Promise<StoredCredentia
 
     function cleanup() {
       clearTimeout(timeout_timer)
-      server.close()
+      callback_server.close()
     }
 
-    server.listen(port, '127.0.0.1', () => {
+    callback_server.listen(port, '127.0.0.1', () => {
       log(`Callback server listening on port ${port}`)
 
       // Try to open browser
