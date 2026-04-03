@@ -17,6 +17,7 @@ User hears TTS response  <- Channel reply tool <----------------------+
 ### Claude Code plugin
 
 ```bash
+claude plugin marketplace add mbailey/claude-plugins
 claude plugin install voicemode-channel@mbailey
 ```
 
@@ -63,13 +64,13 @@ Open **[app.voicemode.dev](https://app.voicemode.dev)** on your phone or browser
 
 ## Configuration
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `VOICEMODE_CHANNEL_ENABLED` | `false` | **Required.** Must be `true` to enable. Server exits immediately otherwise. |
-| `VOICEMODE_CHANNEL_DEBUG` | `false` | Enable debug logging |
-| `VOICEMODE_CONNECT_WS_URL` | `wss://voicemode.dev/ws` | WebSocket gateway URL |
-| `VOICEMODE_AGENT_NAME` | `voicemode` | Agent identity for gateway registration |
-| `VOICEMODE_AGENT_DISPLAY_NAME` | `Claude Code` | Display name shown to callers |
+| Environment Variable           | Default                  | Description                                                                 |
+| ------------------------------ | ------------------------ | --------------------------------------------------------------------------- |
+| `VOICEMODE_CHANNEL_ENABLED`    | `false`                  | **Required.** Must be `true` to enable. Server exits immediately otherwise. |
+| `VOICEMODE_CHANNEL_DEBUG`      | `false`                  | Enable debug logging                                                        |
+| `VOICEMODE_CONNECT_WS_URL`     | `wss://voicemode.dev/ws` | WebSocket gateway URL                                                       |
+| `VOICEMODE_AGENT_NAME`         | `voicemode`              | Agent identity for gateway registration                                     |
+| `VOICEMODE_AGENT_DISPLAY_NAME` | `Claude Code`            | Display name shown to callers                                               |
 
 ## How it works
 
@@ -81,6 +82,7 @@ This plugin provides an MCP server that declares the experimental `claude/channe
 4. Provides a `reply` tool for Claude to send responses back
 
 Channel events appear in Claude's session as:
+
 ```
 <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>
 ```
@@ -88,20 +90,24 @@ Channel events appear in Claude's session as:
 ## Troubleshooting
 
 **Channel not connecting**
+
 - Ensure `VOICEMODE_CHANNEL_ENABLED=true` is set
 - Check credentials exist: `voicemode-channel auth status`
 - Re-authenticate: `voicemode-channel auth login`
 - Enable debug logging: `VOICEMODE_CHANNEL_DEBUG=true`
 
 **No audio on caller's device**
+
 - Confirm you're signed into [app.voicemode.dev](https://app.voicemode.dev) with the same account
 - Check that Claude is using the `reply` tool (not a plain text response)
 
 **Plugin not found after install**
+
 - Verify Claude Code v2.1.80+ is installed: `claude --version`
 - Reinstall: `claude plugin install voicemode-channel@mbailey`
 
 **Hook timeout on startup**
+
 - The SessionStart hook installs npm dependencies -- this may take a moment on first run
 - Subsequent starts use the cached install and are fast
 
