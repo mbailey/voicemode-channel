@@ -4,6 +4,26 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+### Added
+- **Built-in Auth0 PKCE login** -- native login flow, no Python voicemode dependency needed (VMC-448)
+- **CLI auth subcommands** -- `voicemode-channel auth login/logout/status` for credential management
+- **Auto-login on first start** -- opens browser if no credentials found
+- **Headless login fallback** -- prints login URL to stderr when no browser available
+- **Status MCP tool** -- query connection state, auth info, and agent profile (VMC-428)
+- **npm standalone** -- `npx voicemode-channel` works without Claude Code plugin system (VMC-450)
+- **Makefile** -- build, test, publish, run, inspect, shell, and audit targets
+- **Dependabot** -- automated security updates for npm dependencies
+- **mcptools shell support** -- interactive MCP shell via `make shell`
+- **CLAUDE.md** -- project context for Claude Code
+
+### Changed
+- Extracted shared credentials module from gateway.ts (`credentials.ts`)
+- Moved tsx from runtime to dev dependency
+- Entry point shebang changed to `#!/usr/bin/env node`
+
+### Fixed
+- Include `project_path` in `capabilities_update` user entry (VMC-302)
+
 ## [0.1.6] - 2026-03-25
 
 ### Added
