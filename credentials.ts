@@ -53,7 +53,7 @@ export function load_credentials(): StoredCredentials | null {
 export function save_credentials(creds: StoredCredentials): void {
   try {
     const dir = join(homedir(), '.voicemode')
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
     writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), { mode: 0o600 })
   } catch {
     // Best effort -- if we can't save, we continue with the in-memory token

@@ -82,6 +82,10 @@ async function find_available_port(): Promise<number | null> {
 // Callback HTML page
 // ---------------------------------------------------------------------------
 
+function escape_html(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 function callback_page(success: boolean, error_message = ''): string {
   const icon_bg = success ? '#3fb950' : '#f85149'
   const icon_svg = success
@@ -90,7 +94,7 @@ function callback_page(success: boolean, error_message = ''): string {
   const heading = success ? 'Authentication Successful' : 'Authentication Failed'
   const message = success
     ? 'You can close this window and return to the terminal.'
-    : (error_message ? `Error: ${error_message}` : 'Something went wrong.')
+    : (error_message ? `Error: ${escape_html(error_message)}` : 'Something went wrong.')
 
   return `<!DOCTYPE html>
 <html lang="en">
