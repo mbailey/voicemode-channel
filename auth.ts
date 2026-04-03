@@ -238,37 +238,17 @@ function build_authorize_url(redirect_uri: string, pkce: PKCEParams, state: stri
 // ---------------------------------------------------------------------------
 
 export async function login(log: (msg: string) => void): Promise<StoredCredentials> {
-  // Create callback server and find an available port by trying to listen directly
-  // (eliminates TOCTOU race vs separate port-check-then-listen)
-  const server = createServer()
-  let port = 0
-  for (let p = CALLBACK_PORT_START; p <= CALLBACK_PORT_END; p++) {
-    if (await try_listen(server, p)) {
-      port = p
-      break
-    }
-  }
-  if (port === 0) {
-    throw new Error(
-      `No available ports in range ${CALLBACK_PORT_START}-${CALLBACK_PORT_END}. ` +
-      'Please close applications using these ports and try again.',
-    )
-  }
-  // Server is now listening -- close it so we can re-create with request handler
-  server.close()
-
-  // Generate PKCE parameters and state
+  // Generate PKCE parameters and state upfront (needed for the request handler)
   const pkce = generate_pkce_params()
   const state = randomBytes(16).toString('base64url')
-  const redirect_uri = `http://localhost:${port}/callback`
 
-  // Build authorization URL
-  const auth_url = build_authorize_url(redirect_uri, pkce, state)
+  // Create the server with request handler and find a port by trying to listen directly.
+  // The server stays bound to the port the entire time -- no TOCTOU race.
+  const result = await new Promise<{ code: string; state: string | null; port: number } | null>((resolve, reject) => {
+    let bound_port = 0
 
-  // Start callback server and wait for the authorization code
-  const result = await new Promise<{ code: string; state: string | null } | null>((resolve, reject) => {
     const callback_server = createServer((req, res) => {
-      const url = new URL(req.url ?? '/', `http://localhost:${port}`)
+      const url = new URL(req.url ?? '/', `http://localhost:${bound_port}`)
 
       if (url.pathname !== '/callback') {
         res.writeHead(404)
@@ -298,7 +278,7 @@ export async function login(log: (msg: string) => void): Promise<StoredCredentia
       res.writeHead(200, { 'Content-Type': 'text/html' })
       res.end(callback_page(true))
       cleanup()
-      resolve({ code, state: url.searchParams.get('state') })
+      resolve({ code, state: url.searchParams.get('state'), port: bound_port })
     })
 
     const timeout_timer = setTimeout(() => {
@@ -311,8 +291,26 @@ export async function login(log: (msg: string) => void): Promise<StoredCredentia
       callback_server.close()
     }
 
-    callback_server.listen(port, '127.0.0.1', () => {
-      log(`Callback server listening on port ${port}`)
+    // Try ports sequentially until one binds
+    async function bind_port(): Promise<void> {
+      for (let p = CALLBACK_PORT_START; p <= CALLBACK_PORT_END; p++) {
+        if (await try_listen(callback_server, p)) {
+          bound_port = p
+          return
+        }
+      }
+      cleanup()
+      reject(new Error(
+        `No available ports in range ${CALLBACK_PORT_START}-${CALLBACK_PORT_END}. ` +
+        'Please close applications using these ports and try again.',
+      ))
+    }
+
+    bind_port().then(() => {
+      const redirect_uri = `http://localhost:${bound_port}/callback`
+      const auth_url = build_authorize_url(redirect_uri, pkce, state)
+
+      log(`Callback server listening on port ${bound_port}`)
 
       // Try to open browser
       const opened = open_browser(auth_url)
@@ -325,12 +323,7 @@ export async function login(log: (msg: string) => void): Promise<StoredCredentia
       }
 
       log('Waiting for authentication (up to 5 minutes)...')
-    })
-
-    server.on('error', (err) => {
-      cleanup()
-      reject(new Error(`Callback server error: ${err.message}`))
-    })
+    }).catch(reject)
   })
 
   if (result === null) {
@@ -345,6 +338,7 @@ export async function login(log: (msg: string) => void): Promise<StoredCredentia
   log('Authorization code received, exchanging for tokens...')
 
   // Exchange code for tokens
+  const redirect_uri = `http://localhost:${result.port}/callback`
   const token_response = await exchange_code_for_tokens(result.code, pkce.code_verifier, redirect_uri)
 
   const expires_in = (token_response.expires_in as number) ?? 3600
