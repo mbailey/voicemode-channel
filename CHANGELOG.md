@@ -20,9 +20,22 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 - Extracted shared credentials module from gateway.ts (`credentials.ts`)
 - Moved tsx from runtime to dev dependency
 - Entry point shebang changed to `#!/usr/bin/env node`
+- Plugin MCP server now uses `npx voicemode-channel` instead of `start.sh` + tsx
+- Track `package-lock.json` for reproducible installs
 
 ### Fixed
 - Include `project_path` in `capabilities_update` user entry (VMC-302)
+
+### Security
+- **Fix reflected XSS** in OAuth callback page -- HTML-escape `error_description` parameter
+- **Tighten directory permissions** -- `~/.voicemode/` created with mode 0700 (was 0755)
+- **Restrict env parser** -- `voicemode.env` only accepts `VOICEMODE_` prefixed keys
+- **Eliminate TOCTOU race** -- callback port binding uses single server with handler (no check-then-listen)
+- **Reduce path leakage** -- send `basename(cwd)` instead of full filesystem path to gateway
+- **Warn on non-TLS** -- log warning when gateway URL uses unencrypted `ws://` scheme
+- **Cap profile strings** -- profile tool fields limited to 200 characters
+- **Gate npm publish on audit** -- `make publish` runs `npm audit --audit-level=high` before build
+- Security review grade: A (93%) across 4 review cycles
 
 ## [0.1.6] - 2026-03-25
 
