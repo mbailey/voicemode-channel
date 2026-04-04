@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient, get_project_context } from './gateway.js'
+import { write_message } from './maildir.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
 import { load_credentials, is_expired, CREDENTIALS_FILE, get_valid_token } from './credentials.js'
@@ -676,6 +677,25 @@ function start_gateway(): void {
       const message = err instanceof Error ? err.message : String(err)
       log(`Error pushing voice event to channel: ${message}`)
     })
+
+    // Persist inbound message to Maildir (best-effort -- never break voice pipeline)
+    try {
+      const filename = write_message({
+        direction: 'inbound',
+        from_name: caller,
+        to_name: currentProfile.name,
+        text: safe_text.trim(),
+        session_id: gateway?.session_id ?? 'unknown',
+        agent_session_id: gateway?.agent_session_id ?? 'unknown',
+        agent_name: currentProfile.name,
+      })
+      if (filename) {
+        log(`Maildir: wrote inbound message ${filename}`, 'DEBUG')
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      log(`Maildir write failed (non-fatal): ${message}`, 'WARN')
+    }
   })
 
   // Start the connection (non-blocking -- reconnects in the background)
