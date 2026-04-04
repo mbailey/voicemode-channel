@@ -27,6 +27,8 @@ import { GatewayClient, get_project_context } from './gateway.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
 import { load_credentials, is_expired, CREDENTIALS_FILE, get_valid_token } from './credentials.js'
+import { list_messages, read_message } from './maildir.js'
+import type { MaildirMessage } from './maildir.js'
 
 // ---------------------------------------------------------------------------
 // Load ~/.voicemode/voicemode.env (simple dotenv parsing)
@@ -265,6 +267,47 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
       },
+      {
+        name: 'list_messages',
+        description:
+          'List voice messages from the Maildir conversation history. ' +
+          'By default, only shows messages from the current agent session. ' +
+          'Use all_sessions to see messages from all sessions.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            all_sessions: {
+              type: 'boolean',
+              description: 'If true, show messages from all sessions (default: false, current session only)',
+            },
+            direction: {
+              type: 'string',
+              description: 'Filter by message direction',
+              enum: ['inbound', 'outbound'],
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum number of messages to return (default: 50)',
+            },
+          },
+        },
+      },
+      {
+        name: 'read_message',
+        description:
+          'Read the full content of a voice message by filename. ' +
+          'Use list_messages first to find message filenames.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            filename: {
+              type: 'string',
+              description: 'The message filename (e.g. "vm-abc123def456")',
+            },
+          },
+          required: ['filename'],
+        },
+      },
     ],
   }
 })
@@ -282,6 +325,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'reply') {
     return handle_reply_tool(args as Record<string, unknown> | undefined)
+  }
+
+  if (name === 'list_messages') {
+    return handle_list_messages_tool(args as Record<string, unknown> | undefined)
+  }
+
+  if (name === 'read_message') {
+    return handle_read_message_tool(args as Record<string, unknown> | undefined)
   }
 
   return {
@@ -436,6 +487,74 @@ function handle_profile_tool(args: Record<string, unknown> | undefined) {
       type: 'text',
       text: JSON.stringify(currentProfile, null, 2),
     }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: list_messages
+// ---------------------------------------------------------------------------
+
+function handle_list_messages_tool(args: Record<string, unknown> | undefined) {
+  const all_sessions = args?.all_sessions === true
+  const direction = args?.direction as 'inbound' | 'outbound' | undefined
+  const limit = typeof args?.limit === 'number' ? Math.max(1, Math.min(args.limit, 500)) : 50
+
+  // Default to current session unless all_sessions is true
+  const agent_session_id = all_sessions ? undefined : (gateway?.agent_session_id ?? undefined)
+
+  // Validate direction if provided
+  if (direction !== undefined && direction !== 'inbound' && direction !== 'outbound') {
+    return {
+      content: [{ type: 'text', text: 'Error: direction must be "inbound" or "outbound"' }],
+      isError: true,
+    }
+  }
+
+  const messages = list_messages({ agent_session_id, direction, limit })
+
+  if (messages.length === 0) {
+    const scope = all_sessions ? 'any session' : 'the current session'
+    return {
+      content: [{ type: 'text', text: `No messages found for ${scope}.` }],
+    }
+  }
+
+  // Format as a summary list (filename, direction, date, subject preview)
+  const lines = messages.map((msg: MaildirMessage) => {
+    const dir_arrow = msg.direction === 'inbound' ? '<-' : '->'
+    const preview = msg.subject.length > 60 ? msg.subject.slice(0, 60) + '...' : msg.subject
+    return `${msg.filename}  ${dir_arrow}  ${msg.date}  ${preview}`
+  })
+
+  const header = `Messages (${messages.length}${messages.length >= limit ? '+' : ''}):`
+  return {
+    content: [{ type: 'text', text: [header, ...lines].join('\n') }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: read_message
+// ---------------------------------------------------------------------------
+
+function handle_read_message_tool(args: Record<string, unknown> | undefined) {
+  const filename = args?.filename
+  if (typeof filename !== 'string' || filename.trim().length === 0) {
+    return {
+      content: [{ type: 'text', text: 'Error: filename parameter is required and must be non-empty' }],
+      isError: true,
+    }
+  }
+
+  const message = read_message(filename.trim())
+  if (!message) {
+    return {
+      content: [{ type: 'text', text: `Message not found: ${filename}` }],
+      isError: true,
+    }
+  }
+
+  return {
+    content: [{ type: 'text', text: JSON.stringify(message, null, 2) }],
   }
 }
 
