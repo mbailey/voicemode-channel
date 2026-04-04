@@ -24,6 +24,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient, get_project_context } from './gateway.js'
+import { write_message, list_messages, read_message } from './maildir.js'
+import type { MaildirMessage } from './maildir.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
 import { load_credentials, is_expired, CREDENTIALS_FILE, get_valid_token } from './credentials.js'
@@ -167,6 +169,10 @@ let currentProfile: ProfileData = {
   presence: 'available',
 }
 
+// Track the last inbound caller name so outbound replies can reference it.
+// Falls back to 'user' if no inbound message has been received yet.
+let last_caller_name = 'user'
+
 // ---------------------------------------------------------------------------
 // MCP server with channel capability
 // ---------------------------------------------------------------------------
@@ -265,6 +271,47 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
       },
+      {
+        name: 'list_messages',
+        description:
+          'List voice messages from the Maildir conversation history. ' +
+          'By default, only shows messages from the current agent session. ' +
+          'Use all_sessions to see messages from all sessions.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            all_sessions: {
+              type: 'boolean',
+              description: 'If true, show messages from all sessions (default: false, current session only)',
+            },
+            direction: {
+              type: 'string',
+              description: 'Filter by message direction',
+              enum: ['inbound', 'outbound'],
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum number of messages to return (default: 50)',
+            },
+          },
+        },
+      },
+      {
+        name: 'read_message',
+        description:
+          'Read the full content of a voice message by filename. ' +
+          'Use list_messages first to find message filenames.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            filename: {
+              type: 'string',
+              description: 'The message filename (e.g. "vm-abc123def456")',
+            },
+          },
+          required: ['filename'],
+        },
+      },
     ],
   }
 })
@@ -282,6 +329,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'reply') {
     return handle_reply_tool(args as Record<string, unknown> | undefined)
+  }
+
+  if (name === 'list_messages') {
+    return handle_list_messages_tool(args as Record<string, unknown> | undefined)
+  }
+
+  if (name === 'read_message') {
+    return handle_read_message_tool(args as Record<string, unknown> | undefined)
   }
 
   return {
@@ -391,6 +446,22 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
 
   log(`Sent reply via gateway: id=${msg_id} text="${truncate(text.trim(), 80)}"`)
 
+  // Persist outbound message to Maildir (best-effort -- never break reply flow)
+  try {
+    write_message({
+      direction: 'outbound',
+      from_name: currentProfile.name,
+      to_name: last_caller_name,
+      text: text.trim(),
+      session_id: gateway.session_id ?? 'unknown',
+      agent_session_id: gateway.agent_session_id ?? 'unknown',
+      agent_name: currentProfile.name,
+    })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    log(`Maildir write failed (non-fatal): ${message}`, 'WARN')
+  }
+
   return {
     content: [{
       type: 'text',
@@ -436,6 +507,74 @@ function handle_profile_tool(args: Record<string, unknown> | undefined) {
       type: 'text',
       text: JSON.stringify(currentProfile, null, 2),
     }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: list_messages
+// ---------------------------------------------------------------------------
+
+function handle_list_messages_tool(args: Record<string, unknown> | undefined) {
+  const all_sessions = args?.all_sessions === true
+  const direction = args?.direction as 'inbound' | 'outbound' | undefined
+  const limit = typeof args?.limit === 'number' ? Math.max(1, Math.min(args.limit, 500)) : 50
+
+  // Default to current session unless all_sessions is true
+  const agent_session_id = all_sessions ? undefined : (gateway?.agent_session_id ?? undefined)
+
+  // Validate direction if provided
+  if (direction !== undefined && direction !== 'inbound' && direction !== 'outbound') {
+    return {
+      content: [{ type: 'text', text: 'Error: direction must be "inbound" or "outbound"' }],
+      isError: true,
+    }
+  }
+
+  const messages = list_messages({ agent_session_id, direction, limit })
+
+  if (messages.length === 0) {
+    const scope = all_sessions ? 'any session' : 'the current session'
+    return {
+      content: [{ type: 'text', text: `No messages found for ${scope}.` }],
+    }
+  }
+
+  // Format as a summary list (filename, direction, date, subject preview)
+  const lines = messages.map((msg: MaildirMessage) => {
+    const dir_arrow = msg.direction === 'inbound' ? '<-' : '->'
+    const preview = msg.subject.length > 60 ? msg.subject.slice(0, 60) + '...' : msg.subject
+    return `${msg.filename}  ${dir_arrow}  ${msg.date}  ${preview}`
+  })
+
+  const header = `Messages (${messages.length}${messages.length >= limit ? '+' : ''}):`
+  return {
+    content: [{ type: 'text', text: [header, ...lines].join('\n') }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: read_message
+// ---------------------------------------------------------------------------
+
+function handle_read_message_tool(args: Record<string, unknown> | undefined) {
+  const filename = args?.filename
+  if (typeof filename !== 'string' || filename.trim().length === 0) {
+    return {
+      content: [{ type: 'text', text: 'Error: filename parameter is required and must be non-empty' }],
+      isError: true,
+    }
+  }
+
+  const message = read_message(filename.trim())
+  if (!message) {
+    return {
+      content: [{ type: 'text', text: `Message not found: ${filename}` }],
+      isError: true,
+    }
+  }
+
+  return {
+    content: [{ type: 'text', text: JSON.stringify(message, null, 2) }],
   }
 }
 
@@ -551,12 +690,34 @@ function start_gateway(): void {
       ? user_id
       : undefined
 
+    // Remember caller name for outbound reply attribution
+    last_caller_name = caller
+
     log(`Received voice event: from="${caller}" text="${truncate(safe_text.trim(), 80)}"`)
 
     push_voice_event(caller, safe_text.trim(), device_id).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
       log(`Error pushing voice event to channel: ${message}`)
     })
+
+    // Persist inbound message to Maildir (best-effort -- never break voice pipeline)
+    try {
+      const filename = write_message({
+        direction: 'inbound',
+        from_name: caller,
+        to_name: currentProfile.name,
+        text: safe_text.trim(),
+        session_id: gateway?.session_id ?? 'unknown',
+        agent_session_id: gateway?.agent_session_id ?? 'unknown',
+        agent_name: currentProfile.name,
+      })
+      if (filename) {
+        log(`Maildir: wrote inbound message ${filename}`, 'DEBUG')
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      log(`Maildir write failed (non-fatal): ${message}`, 'WARN')
+    }
   })
 
   // Start the connection (non-blocking -- reconnects in the background)

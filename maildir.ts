@@ -12,8 +12,8 @@
  *   VOICEMODE_MAILDIR_ENABLED Set to 'false' to disable persistence
  */
 
-import { mkdirSync, writeFileSync, renameSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, writeFileSync, renameSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
@@ -26,6 +26,19 @@ export interface VoiceMessage {
   agent_session_id: string  // claude session
   agent_name: string
   timestamp?: Date
+}
+
+export interface MaildirMessage {
+  filename: string
+  from: string
+  to: string
+  date: string
+  subject: string
+  direction: string
+  session_id: string
+  agent_session_id: string
+  agent_name: string
+  body: string
 }
 
 const DEFAULT_MAILDIR = join(homedir(), '.voicemode', 'maildir', 'channel')
@@ -93,4 +106,159 @@ export function write_message(msg: VoiceMessage): string | null {
   renameSync(tmp_path, new_path)
 
   return filename
+}
+
+// ---------------------------------------------------------------------------
+// Read helpers -- parse RFC 2822 messages from Maildir
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse an RFC 2822 message string into headers and body.
+ * Headers are separated from the body by the first blank line.
+ */
+function parse_message(raw: string): { headers: Record<string, string>; body: string } {
+  const headers: Record<string, string> = {}
+  const separator = raw.indexOf('\n\n')
+  const header_block = separator >= 0 ? raw.slice(0, separator) : raw
+  const body = separator >= 0 ? raw.slice(separator + 2).trimEnd() : ''
+
+  for (const line of header_block.split('\n')) {
+    const colon = line.indexOf(':')
+    if (colon < 1) continue
+    const key = line.slice(0, colon).trim()
+    const value = line.slice(colon + 1).trim()
+    headers[key] = value
+  }
+
+  return { headers, body }
+}
+
+/**
+ * Convert parsed headers + body into a MaildirMessage.
+ */
+function to_maildir_message(filename: string, headers: Record<string, string>, body: string): MaildirMessage {
+  return {
+    filename,
+    from: headers['From'] ?? '',
+    to: headers['To'] ?? '',
+    date: headers['Date'] ?? '',
+    subject: headers['Subject'] ?? '',
+    direction: headers['X-VoiceMode-Direction'] ?? '',
+    session_id: headers['X-VoiceMode-Session'] ?? '',
+    agent_session_id: headers['X-VoiceMode-Agent-Session'] ?? '',
+    agent_name: headers['X-VoiceMode-Agent'] ?? '',
+    body,
+  }
+}
+
+/**
+ * Read a single message by filename from the Maildir.
+ *
+ * Security: rejects filenames containing '..' or '/' and verifies the
+ * resolved path is within the Maildir directory. Only returns messages
+ * with X-Transport: voicemode-connect header.
+ *
+ * Returns null if the file doesn't exist, fails security checks, or
+ * has the wrong X-Transport header.
+ */
+export function read_message(filename: string): MaildirMessage | null {
+  // Path traversal prevention: reject suspicious filenames
+  if (filename.includes('..') || filename.includes('/')) return null
+
+  const maildir = get_maildir_path()
+  const maildir_resolved = resolve(maildir)
+
+  // Check new/ and cur/ directories
+  for (const sub of ['new', 'cur']) {
+    const file_path = join(maildir, sub, filename)
+    const resolved_path = resolve(file_path)
+
+    // Verify resolved path is within the Maildir directory
+    if (!resolved_path.startsWith(maildir_resolved + '/')) continue
+
+    if (!existsSync(resolved_path)) continue
+
+    try {
+      const raw = readFileSync(resolved_path, 'utf8')
+      const { headers, body } = parse_message(raw)
+
+      // Only return messages with the correct transport header
+      if (headers['X-Transport'] !== 'voicemode-connect') return null
+
+      return to_maildir_message(filename, headers, body)
+    } catch {
+      return null
+    }
+  }
+
+  return null
+}
+
+/**
+ * List messages from the Maildir, filtered by session and direction.
+ *
+ * Scans both new/ and cur/ directories. Only includes messages with
+ * X-Transport: voicemode-connect header.
+ *
+ * Returns messages sorted by date descending (newest first).
+ */
+export function list_messages(options: {
+  agent_session_id?: string
+  direction?: 'inbound' | 'outbound'
+  limit?: number
+}): MaildirMessage[] {
+  const { agent_session_id, direction, limit = 50 } = options
+  const maildir = get_maildir_path()
+  const messages: MaildirMessage[] = []
+
+  for (const sub of ['new', 'cur']) {
+    const dir_path = join(maildir, sub)
+    if (!existsSync(dir_path)) continue
+
+    let filenames: string[]
+    try {
+      filenames = readdirSync(dir_path)
+    } catch {
+      continue
+    }
+
+    for (const filename of filenames) {
+      // Skip hidden files and non-vm files
+      if (filename.startsWith('.')) continue
+
+      const file_path = join(dir_path, filename)
+      let raw: string
+      try {
+        raw = readFileSync(file_path, 'utf8')
+      } catch {
+        continue
+      }
+
+      const { headers, body } = parse_message(raw)
+
+      // Only include voicemode-connect messages
+      if (headers['X-Transport'] !== 'voicemode-connect') continue
+
+      // Filter by agent_session_id if provided
+      if (agent_session_id && headers['X-VoiceMode-Agent-Session'] !== agent_session_id) continue
+
+      // Filter by direction if provided
+      if (direction && headers['X-VoiceMode-Direction'] !== direction) continue
+
+      messages.push(to_maildir_message(filename, headers, body))
+    }
+  }
+
+  // Sort by date descending (newest first)
+  messages.sort((a, b) => {
+    const date_a = new Date(a.date).getTime()
+    const date_b = new Date(b.date).getTime()
+    // Handle invalid dates by pushing them to the end
+    if (isNaN(date_a) && isNaN(date_b)) return 0
+    if (isNaN(date_a)) return 1
+    if (isNaN(date_b)) return -1
+    return date_b - date_a
+  })
+
+  return messages.slice(0, limit)
 }
