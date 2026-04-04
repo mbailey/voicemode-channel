@@ -27,6 +27,7 @@ import { GatewayClient, get_project_context } from './gateway.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
 import { load_credentials, is_expired, CREDENTIALS_FILE, get_valid_token } from './credentials.js'
+import { write_message } from './maildir.js'
 
 // ---------------------------------------------------------------------------
 // Load ~/.voicemode/voicemode.env (simple dotenv parsing)
@@ -166,6 +167,10 @@ let currentProfile: ProfileData = {
   voice: null,
   presence: 'available',
 }
+
+// Track the last inbound caller name so outbound replies can reference it.
+// Falls back to 'user' if no inbound message has been received yet.
+let last_caller_name = 'user'
 
 // ---------------------------------------------------------------------------
 // MCP server with channel capability
@@ -391,6 +396,22 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
 
   log(`Sent reply via gateway: id=${msg_id} text="${truncate(text.trim(), 80)}"`)
 
+  // Persist outbound message to Maildir (best-effort -- never break reply flow)
+  try {
+    write_message({
+      direction: 'outbound',
+      from_name: currentProfile.name,
+      to_name: last_caller_name,
+      text: text.trim(),
+      session_id: gateway.session_id ?? 'unknown',
+      agent_session_id: gateway.agent_session_id ?? 'unknown',
+      agent_name: currentProfile.name,
+    })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    log(`Maildir write failed (non-fatal): ${message}`, 'WARN')
+  }
+
   return {
     content: [{
       type: 'text',
@@ -550,6 +571,9 @@ function start_gateway(): void {
     const device_id = typeof user_id === 'string' && user_id.length > 0
       ? user_id
       : undefined
+
+    // Remember caller name for outbound reply attribution
+    last_caller_name = caller
 
     log(`Received voice event: from="${caller}" text="${truncate(safe_text.trim(), 80)}"`)
 
