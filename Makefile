@@ -1,6 +1,6 @@
 # voicemode-channel Makefile
 
-.PHONY: help build clean test run inspect shell audit publish release
+.PHONY: help build clean test test-unit run inspect shell audit publish release
 
 help:
 	@echo "Usage: make [target]"
@@ -9,7 +9,8 @@ help:
 	@echo "  build     Compile TypeScript to dist/"
 	@echo "  clean     Remove build artifacts"
 	@echo "  run       Build and run MCP server (stdio)"
-	@echo "  test      Build and test from tarball"
+	@echo "  test      Run unit tests, build, and test from tarball"
+	@echo "  test-unit Run unit tests"
 	@echo "  inspect   Open MCP Inspector web UI"
 	@echo "  shell     Open mcptools interactive shell"
 	@echo "  audit     Run npm security audit"
@@ -40,7 +41,10 @@ shell: build ## Interactive MCP shell (brew install mcptools)
 #   /h                                 Show all commands
 #   /q                                 Quit
 
-test: clean build
+test-unit:  ## Run unit tests
+	npx tsx maildir.test.ts
+
+test: test-unit clean build
 	@echo "Packing and testing..."
 	npm pack
 	@tmpdir=$$(mktemp -d) && \
