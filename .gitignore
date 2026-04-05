@@ -4,3 +4,7 @@ dist/
 !start.sh
 .DS_Store
 .voicemode.env
+
+# Test artifacts
+coverage/
+session-notes/
