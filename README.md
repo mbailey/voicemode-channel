@@ -2,14 +2,14 @@
 
 A Claude Code plugin that enables inbound voice calls via [VoiceMode Connect](https://voicemode.dev).
 
-Users speak on their phone or web app, and their messages arrive in your Claude Code session as channel events. Claude responds using the reply tool, and the response is spoken aloud on the caller's device.
+Users speak on their phone or web app, and their messages arrive in your Claude Code session as channel events. Claude responds using the send_message tool, and the message is delivered to the caller's device.
 
 ![VoiceMode Connect web app showing a voice conversation with Claude Code](assets/screenshot.png)
 
 ```
 User speaks on phone/web -> VoiceMode gateway -> Channel plugin -> Claude Code
                                                                        |
-User hears TTS response  <- Channel reply tool <----------------------+
+User receives message     <- Channel send_message tool <----------------+
 ```
 
 ## Install
@@ -79,7 +79,7 @@ This plugin provides an MCP server that declares the experimental `claude/channe
 1. Connects to the VoiceMode Connect WebSocket gateway (authenticated via Auth0)
 2. Registers as a callable agent so callers can reach it
 3. Receives voice transcripts and pushes them as channel notifications
-4. Provides a `reply` tool for Claude to send responses back
+4. Provides a `send_message` tool for Claude to send responses back
 
 Channel events appear in Claude's session as:
 
@@ -99,7 +99,7 @@ Channel events appear in Claude's session as:
 **No audio on caller's device**
 
 - Confirm you're signed into [app.voicemode.dev](https://app.voicemode.dev) with the same account
-- Check that Claude is using the `reply` tool (not a plain text response)
+- Check that Claude is using the `send_message` tool (not a plain text response)
 
 **Plugin not found after install**
 
@@ -139,7 +139,7 @@ Example session:
 ```
 mcp > tools                              # List available tools
 mcp > status                             # Check connection state
-mcp > reply {"text":"hello from cli"}    # Send a voice reply
+mcp > send_message {"text":"hello from cli"}  # Send a message
 mcp > profile                            # View agent profile
 mcp > profile {"voice":"af_sky"}         # Update profile fields
 mcp > /q                                 # Quit

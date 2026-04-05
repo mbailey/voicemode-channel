@@ -150,8 +150,8 @@ const CHANNEL_VERSION = (() => {
 const INSTRUCTIONS = [
   'Events from VoiceMode appear as <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>.',
   'These are inbound voice messages from a user speaking on their phone or web app.',
-  'Respond using the voicemode-channel reply tool (NOT the converse tool from a different server).',
-  'The reply tool sends your response back through the same channel connection,',
+  'Respond using the voicemode-channel send_message tool (NOT the converse tool from a different server).',
+  'The send_message tool sends your response back through the same channel connection,',
   'keeping the conversation in the same thread on the user\'s device.',
   'Address the caller by name.',
   'Keep responses concise -- the user is listening via text-to-speech.',
@@ -197,25 +197,25 @@ function generate_message_id(): string {
 }
 
 // ---------------------------------------------------------------------------
-// MCP tool handlers (reply tool)
+// MCP tool handlers (send_message tool)
 // ---------------------------------------------------------------------------
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: 'reply',
+        name: 'send_message',
         description:
-          'Send a voice reply to the user through VoiceMode. ' +
-          'Use this to respond to inbound voice channel events. ' +
-          'The reply is spoken aloud on the user\'s device via TTS. ' +
+          'Send a message to the user through VoiceMode. ' +
+          'Use this to respond to inbound voice channel events or to initiate a conversation. ' +
+          'The message is delivered to the user\'s device -- they may hear it as TTS or read it as text. ' +
           'Pass in_reply_to to mark the source message with the R (Replied) flag.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             text: {
               type: 'string',
-              description: 'The message to speak to the user',
+              description: 'The message to send to the user',
             },
             voice: {
               type: 'string',
@@ -377,8 +377,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     return handle_profile_tool(args as Record<string, unknown> | undefined)
   }
 
-  if (name === 'reply') {
-    return handle_reply_tool(args as Record<string, unknown> | undefined)
+  if (name === 'send_message') {
+    return handle_send_message_tool(args as Record<string, unknown> | undefined)
   }
 
   if (name === 'list_messages') {
@@ -466,10 +466,10 @@ function handle_status_tool() {
 }
 
 // ---------------------------------------------------------------------------
-// Tool handler: reply
+// Tool handler: send_message
 // ---------------------------------------------------------------------------
 
-function handle_reply_tool(args: Record<string, unknown> | undefined) {
+function handle_send_message_tool(args: Record<string, unknown> | undefined) {
   // Validate arguments
   const text = args?.text
   if (typeof text !== 'string' || text.trim().length === 0) {
@@ -512,10 +512,10 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  log(`Sent reply via gateway: id=${msg_id} text="${truncate(text.trim(), 80)}"`)
+  log(`Sent message via gateway: id=${msg_id} text="${truncate(text.trim(), 80)}"`)
 
-  // Apply R (Replied) flag to the source message when reply-context is provided.
-  // Best-effort -- never break reply flow if the source file is gone.
+  // Apply R (Replied) flag to the source message when in_reply_to is provided.
+  // Best-effort -- never break send flow if the source file is gone.
   if (in_reply_to) {
     try {
       const results = mark_read([in_reply_to], 'R')
@@ -531,7 +531,7 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  // Persist outbound message to Maildir (best-effort -- never break reply flow)
+  // Persist outbound message to Maildir (best-effort -- never break send flow)
   try {
     write_message({
       direction: 'outbound',
@@ -550,7 +550,7 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
   return {
     content: [{
       type: 'text',
-      text: `Reply sent (id: ${msg_id}). Text: "${truncate(text.trim(), 120)}"`,
+      text: `Message sent (id: ${msg_id}). Text: "${truncate(text.trim(), 120)}"`,
     }],
   }
 }
@@ -840,7 +840,7 @@ function start_gateway(): void {
       ? user_id
       : undefined
 
-    // Remember caller name for outbound reply attribution
+    // Remember caller name for outbound message attribution
     last_caller_name = caller
 
     log(`Received voice event: from="${caller}" text="${truncate(safe_text.trim(), 80)}"`)

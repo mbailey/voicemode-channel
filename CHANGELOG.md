@@ -4,6 +4,10 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed `reply` tool to `send_message`** -- better semantic naming for both humans and LLMs. The tool sends a message; the receiver decides whether to play it as TTS or show as text (VMC-494)
+
 ## [0.3.1] - 2026-04-05
 
 ## [0.3.0] - 2026-04-05
@@ -17,7 +21,7 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 - **Bulk body reads** -- `list_messages` takes `include_body` (default false) and `body_max_length` (default 2000, 0 = unlimited) with a clear truncation marker, so agents can fetch many messages in one call (VMC-490)
 - **Unread filter** -- `list_messages` accepts `unread` (true/false/undefined) to filter by read state (VMC-490)
 - **Unread count in status** -- the `status` tool reports the number of unread messages, supporting notification-append patterns (VMC-490)
-- **R-flag on reply** -- the `reply` tool accepts an optional `in_reply_to` filename and stamps the source message with the Replied flag (VMC-490)
+- **R-flag on reply** -- the `send_message` tool accepts an optional `in_reply_to` filename and stamps the source message with the Replied flag (VMC-490)
 - **Persistence configuration** -- `VOICEMODE_MAILDIR_PATH` and `VOICEMODE_MAILDIR_ENABLED` environment variables control the Maildir location and whether persistence is active
 
 ### Security
