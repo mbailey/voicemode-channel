@@ -262,3 +262,153 @@ export function list_messages(options: {
 
   return messages.slice(0, limit)
 }
+
+// ---------------------------------------------------------------------------
+// Maildir flag operations (mark_read)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a Maildir filename into its base and flag components.
+ *
+ * Maildir spec: filenames in cur/ use the form `<base>:2,<flags>` where flags
+ * are ASCII letters sorted alphabetically (e.g. "RS" = Replied + Seen).
+ * Files in new/ typically have no suffix.
+ *
+ * Only the experimental `:2,` variant is recognized -- `:1,` filenames are
+ * treated as having no flags, since that form is not used by notmuch/neomutt.
+ */
+export function parse_maildir_filename(filename: string): { base: string; flags: string } {
+  const marker = ':2,'
+  const idx = filename.lastIndexOf(marker)
+  if (idx < 0) return { base: filename, flags: '' }
+  return { base: filename.slice(0, idx), flags: filename.slice(idx + marker.length) }
+}
+
+/**
+ * Merge two flag strings into a single set of unique, alphabetically sorted
+ * uppercase ASCII-letter flags.
+ *
+ * Non-letter characters are dropped. Case is normalized to uppercase.
+ * Duplicates are removed. Output is sorted (standard Maildir flag order).
+ */
+export function merge_flags(existing: string, new_flags: string): string {
+  const letters = new Set<string>()
+  for (const ch of (existing + new_flags).toUpperCase()) {
+    if (ch >= 'A' && ch <= 'Z') letters.add(ch)
+  }
+  return Array.from(letters).sort().join('')
+}
+
+/**
+ * Build a full Maildir filename from its base and flag components.
+ * When flags is empty, returns just the base (suitable for new/ files).
+ */
+export function build_maildir_filename(base: string, flags: string): string {
+  return flags.length === 0 ? base : `${base}:2,${flags}`
+}
+
+export interface MarkReadResult {
+  /** The filename as passed in by the caller. */
+  filename: string
+  /** New filename (with flags applied) if the file was found and renamed. */
+  new_filename: string | null
+  /** True if the file was located in new/ or cur/. */
+  found: boolean
+}
+
+/**
+ * Mark one or more messages with Maildir flags, moving them from new/ to cur/.
+ *
+ * For each filename:
+ *   1. Locate the file by its base name (with or without a :2,FLAGS suffix)
+ *      in either new/ or cur/.
+ *   2. Merge the requested flags with any existing flags (unique, sorted).
+ *   3. Rename the file to `<base>:2,<flags>` in cur/.
+ *
+ * Security: filenames containing '..' or '/' are rejected (returns found=false).
+ *
+ * Idempotent: marking an already-marked file with the same flags is a no-op
+ * rename (the file is already in cur/ with those flags).
+ *
+ * @param filenames Basenames of Maildir files (as returned by list_messages)
+ * @param flags Letters to apply (default "S" = Seen). Case-insensitive.
+ * @returns One result per input filename, in the same order.
+ */
+export function mark_read(filenames: string[], flags: string = 'S'): MarkReadResult[] {
+  const maildir = get_maildir_path()
+  const maildir_resolved = resolve(maildir)
+  const cur_dir = join(maildir, 'cur')
+
+  // Ensure cur/ exists (may not if nothing has been marked yet)
+  mkdirSync(cur_dir, { recursive: true })
+
+  const results: MarkReadResult[] = []
+
+  for (const filename of filenames) {
+    // Path traversal prevention
+    if (filename.includes('..') || filename.includes('/')) {
+      results.push({ filename, new_filename: null, found: false })
+      continue
+    }
+
+    const { base } = parse_maildir_filename(filename)
+
+    // Search both new/ and cur/ for a file whose base matches.
+    // The on-disk name may differ from `filename` if flags were previously applied.
+    let found_path: string | null = null
+    let found_sub: string | null = null
+    let found_name: string | null = null
+
+    for (const sub of ['new', 'cur']) {
+      const dir_path = join(maildir, sub)
+      if (!existsSync(dir_path)) continue
+
+      let entries: string[]
+      try {
+        entries = readdirSync(dir_path)
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        if (parse_maildir_filename(entry).base === base) {
+          const candidate = join(dir_path, entry)
+          const resolved = resolve(candidate)
+          // Verify resolved path is within the Maildir directory
+          if (!resolved.startsWith(maildir_resolved + '/')) continue
+          found_path = resolved
+          found_sub = sub
+          found_name = entry
+          break
+        }
+      }
+      if (found_path) break
+    }
+
+    if (!found_path || !found_sub || !found_name) {
+      results.push({ filename, new_filename: null, found: false })
+      continue
+    }
+
+    // Merge existing flags with requested flags
+    const existing_flags = parse_maildir_filename(found_name).flags
+    const merged = merge_flags(existing_flags, flags)
+    const new_name = build_maildir_filename(base, merged)
+    const new_path = join(cur_dir, new_name)
+
+    // If source == destination, it's a no-op (already marked in cur/)
+    if (found_path === resolve(new_path)) {
+      results.push({ filename, new_filename: new_name, found: true })
+      continue
+    }
+
+    try {
+      renameSync(found_path, new_path)
+      results.push({ filename, new_filename: new_name, found: true })
+    } catch {
+      results.push({ filename, new_filename: null, found: false })
+    }
+  }
+
+  return results
+}

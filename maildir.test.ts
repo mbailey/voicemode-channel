@@ -10,7 +10,16 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSyn
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { write_message, read_message, list_messages, get_maildir_path } from './maildir.js'
+import {
+  write_message,
+  read_message,
+  list_messages,
+  get_maildir_path,
+  mark_read,
+  parse_maildir_filename,
+  merge_flags,
+  build_maildir_filename,
+} from './maildir.js'
 import type { VoiceMessage } from './maildir.js'
 
 // ---------------------------------------------------------------------------
@@ -298,6 +307,205 @@ describe('maildir', () => {
         // Directory doesn't exist -- that's expected
       }
       assert.equal(file_count, 0, 'No files should be written when persistence is disabled')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 8. Maildir filename parsing helpers (pure functions)
+  // -----------------------------------------------------------------------
+  describe('parse_maildir_filename', () => {
+    it('returns empty flags for a bare basename', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123'), { base: 'vm-abc123', flags: '' })
+    })
+
+    it('splits base and flags on :2, marker', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123:2,S'), { base: 'vm-abc123', flags: 'S' })
+      assert.deepEqual(parse_maildir_filename('vm-abc123:2,RS'), { base: 'vm-abc123', flags: 'RS' })
+    })
+
+    it('preserves empty flags after :2, marker', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123:2,'), { base: 'vm-abc123', flags: '' })
+    })
+
+    it('treats unknown info markers (:1,) as no flags', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123:1,foo'), { base: 'vm-abc123:1,foo', flags: '' })
+    })
+  })
+
+  describe('merge_flags', () => {
+    it('returns sorted unique flags', () => {
+      assert.equal(merge_flags('S', 'R'), 'RS')
+      assert.equal(merge_flags('RS', 'S'), 'RS')
+      assert.equal(merge_flags('', 'S'), 'S')
+      assert.equal(merge_flags('S', ''), 'S')
+    })
+
+    it('deduplicates and sorts across both inputs', () => {
+      assert.equal(merge_flags('SF', 'RT'), 'FRST')
+      assert.equal(merge_flags('RRR', 'SSS'), 'RS')
+    })
+
+    it('normalizes to uppercase', () => {
+      assert.equal(merge_flags('s', 'r'), 'RS')
+      assert.equal(merge_flags('rS', 'f'), 'FRS')
+    })
+
+    it('drops non-letter characters', () => {
+      assert.equal(merge_flags('S1', 'R!'), 'RS')
+      assert.equal(merge_flags(',', ':2,S'), 'S')
+    })
+  })
+
+  describe('build_maildir_filename', () => {
+    it('returns base alone when flags are empty', () => {
+      assert.equal(build_maildir_filename('vm-abc', ''), 'vm-abc')
+    })
+
+    it('appends :2, prefix when flags are set', () => {
+      assert.equal(build_maildir_filename('vm-abc', 'S'), 'vm-abc:2,S')
+      assert.equal(build_maildir_filename('vm-abc', 'RS'), 'vm-abc:2,RS')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 9. mark_read
+  // -----------------------------------------------------------------------
+  describe('mark_read', () => {
+    it('moves a file from new/ to cur/ with default S flag', () => {
+      const filename = write_message(make_message({ text: 'mark-me-read' }))!
+      assert.ok(filename)
+
+      const results = mark_read([filename])
+
+      assert.equal(results.length, 1)
+      assert.equal(results[0].filename, filename)
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,S`)
+
+      // File should no longer exist in new/
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      // File should exist in cur/ with :2,S suffix
+      const cur_files = readdirSync(join(tmp_dir, 'cur'))
+      assert.equal(cur_files.length, 1)
+      assert.equal(cur_files[0], `${filename}:2,S`)
+    })
+
+    it('supports custom flag sets and sorts them alphabetically', () => {
+      const filename = write_message(make_message({ text: 'custom-flags' }))!
+      const results = mark_read([filename], 'RS')
+
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+
+      // Verify on disk
+      const cur_files = readdirSync(join(tmp_dir, 'cur'))
+      assert.ok(cur_files.includes(`${filename}:2,RS`))
+    })
+
+    it('sorts flags alphabetically even when input is not sorted', () => {
+      const filename = write_message(make_message({ text: 'unsorted-input' }))!
+      const results = mark_read([filename], 'SR')
+
+      // Output must be alphabetically sorted per Maildir spec
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('merges with existing flags when called twice', () => {
+      const filename = write_message(make_message({ text: 'merge-flags' }))!
+
+      // First mark: just S
+      const first = mark_read([filename], 'S')
+      assert.equal(first[0].new_filename, `${filename}:2,S`)
+
+      // Second mark: add R -- should merge to RS (pass the already-flagged name)
+      const second = mark_read([`${filename}:2,S`], 'R')
+      assert.equal(second[0].new_filename, `${filename}:2,RS`)
+
+      // Only one file should exist now (merge, not duplicate)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+    })
+
+    it('looks up by base name so the caller can pass either form', () => {
+      const filename = write_message(make_message({ text: 'by-base' }))!
+
+      // First mark to get into cur/ with :2,S suffix
+      mark_read([filename], 'S')
+
+      // Now call again with the *bare* base name (no suffix) -- should still find it
+      const results = mark_read([filename], 'R')
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('deduplicates repeated flag letters', () => {
+      const filename = write_message(make_message({ text: 'dedup-flags' }))!
+      const results = mark_read([filename], 'SSSRS')
+
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('is idempotent when the same flag is applied twice', () => {
+      const filename = write_message(make_message({ text: 'idempotent' }))!
+
+      mark_read([filename], 'S')
+      const second = mark_read([`${filename}:2,S`], 'S')
+
+      assert.equal(second[0].found, true)
+      assert.equal(second[0].new_filename, `${filename}:2,S`)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+    })
+
+    it('handles bulk filenames in a single call', () => {
+      const f1 = write_message(make_message({ text: 'bulk-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'bulk-2', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'bulk-3', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      const results = mark_read([f1, f2, f3], 'S')
+
+      assert.equal(results.length, 3)
+      assert.ok(results.every(r => r.found), 'all three should be found')
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 3)
+    })
+
+    it('returns found=false for missing filenames without crashing', () => {
+      // Write one real message
+      const real = write_message(make_message({ text: 'real' }))!
+
+      const results = mark_read([real, 'vm-doesnotexist'], 'S')
+
+      assert.equal(results.length, 2)
+      assert.equal(results[0].found, true)
+      assert.equal(results[1].found, false)
+      assert.equal(results[1].new_filename, null)
+    })
+
+    it('rejects filenames with path traversal', () => {
+      const results = mark_read(['../../etc/passwd', '../secret', 'subdir/file'], 'S')
+
+      assert.equal(results.length, 3)
+      assert.ok(results.every(r => !r.found), 'all path-traversal attempts should fail')
+      assert.ok(results.every(r => r.new_filename === null))
+    })
+
+    it('creates cur/ directory if it does not already exist', () => {
+      const filename = write_message(make_message({ text: 'no-cur-yet' }))!
+
+      // Remove cur/ to simulate a fresh maildir (write_message creates it but let's be sure)
+      rmSync(join(tmp_dir, 'cur'), { recursive: true, force: true })
+      assert.equal(readdirSync(tmp_dir).includes('cur'), false)
+
+      const results = mark_read([filename], 'S')
+      assert.equal(results[0].found, true)
+      assert.ok(readdirSync(tmp_dir).includes('cur'))
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+    })
+
+    it('accepts flag letters in mixed case', () => {
+      const filename = write_message(make_message({ text: 'mixed-case' }))!
+      const results = mark_read([filename], 'rs')
+
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
     })
   })
 })
