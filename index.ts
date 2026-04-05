@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient, get_project_context } from './gateway.js'
-import { write_message, list_messages, read_message } from './maildir.js'
+import { write_message, list_messages, read_message, mark_read } from './maildir.js'
 import type { MaildirMessage } from './maildir.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
@@ -300,7 +300,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         name: 'read_message',
         description:
           'Read the full content of a voice message by filename. ' +
-          'Use list_messages first to find message filenames.',
+          'Use list_messages first to find message filenames. ' +
+          'By default, marks the message as Seen (moves from new/ to cur/ with S flag). ' +
+          'Pass mark_read: false to leave the message unread.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -308,8 +310,37 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'The message filename (e.g. "vm-abc123def456")',
             },
+            mark_read: {
+              type: 'boolean',
+              description: 'Whether to mark the message as Seen on read (default: true)',
+            },
           },
           required: ['filename'],
+        },
+      },
+      {
+        name: 'mark_read',
+        description:
+          'Apply Maildir flags to one or more messages (bulk supported). ' +
+          'Default flag is "S" (Seen). Files are moved from new/ to cur/ with a ' +
+          ':2,FLAGS suffix per the Maildir spec. Flags are merged with any existing ' +
+          'flags on the file (e.g. marking an "R" message as Seen yields ":2,RS"). ' +
+          'Use this when you want to mark multiple messages read in one call, or to ' +
+          'apply non-Seen flags (R=Replied, F=Flagged, T=Trashed, D=Draft).',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            filenames: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Message filenames to mark (from list_messages)',
+            },
+            flags: {
+              type: 'string',
+              description: 'Flag letters to apply, e.g. "S", "RS" (default: "S")',
+            },
+          },
+          required: ['filenames'],
         },
       },
     ],
@@ -337,6 +368,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'read_message') {
     return handle_read_message_tool(args as Record<string, unknown> | undefined)
+  }
+
+  if (name === 'mark_read') {
+    return handle_mark_read_tool(args as Record<string, unknown> | undefined)
   }
 
   return {
@@ -565,7 +600,10 @@ function handle_read_message_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const message = read_message(filename.trim())
+  // mark_read defaults to true -- callers pass false to opt out
+  const should_mark = typeof args?.mark_read === 'boolean' ? args.mark_read : true
+
+  const message = read_message(filename.trim(), { mark_read: should_mark })
   if (!message) {
     return {
       content: [{ type: 'text', text: `Message not found: ${filename}` }],
@@ -575,6 +613,57 @@ function handle_read_message_tool(args: Record<string, unknown> | undefined) {
 
   return {
     content: [{ type: 'text', text: JSON.stringify(message, null, 2) }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: mark_read
+// ---------------------------------------------------------------------------
+
+function handle_mark_read_tool(args: Record<string, unknown> | undefined) {
+  const filenames_arg = args?.filenames
+  if (!Array.isArray(filenames_arg) || filenames_arg.length === 0) {
+    return {
+      content: [{ type: 'text', text: 'Error: filenames parameter is required and must be a non-empty array' }],
+      isError: true,
+    }
+  }
+
+  // Validate each filename is a non-empty string
+  const filenames: string[] = []
+  for (const item of filenames_arg) {
+    if (typeof item !== 'string' || item.trim().length === 0) {
+      return {
+        content: [{ type: 'text', text: 'Error: every filename must be a non-empty string' }],
+        isError: true,
+      }
+    }
+    filenames.push(item.trim())
+  }
+
+  const flags = typeof args?.flags === 'string' && args.flags.length > 0 ? args.flags : 'S'
+
+  const results = mark_read(filenames, flags)
+
+  // Format a human-readable summary alongside the structured result
+  const found_count = results.filter(r => r.found).length
+  const missing_count = results.length - found_count
+
+  const lines: string[] = []
+  lines.push(`mark_read: ${found_count}/${results.length} marked with flags=${flags}`)
+  if (missing_count > 0) {
+    lines.push(`  ${missing_count} not found`)
+  }
+  for (const r of results) {
+    if (r.found) {
+      lines.push(`  [OK]  ${r.filename} -> ${r.new_filename}`)
+    } else {
+      lines.push(`  [??]  ${r.filename} (not found)`)
+    }
+  }
+
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
   }
 }
 

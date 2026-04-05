@@ -79,8 +79,8 @@ describe('maildir', () => {
       const files = readdirSync(new_dir)
       assert.ok(files.includes(filename), `File ${filename} should exist in new/`)
 
-      // Read back and verify headers
-      const result = read_message(filename)
+      // Read back and verify headers (opt out of auto-mark so file stays in new/)
+      const result = read_message(filename, { mark_read: false })
       assert.ok(result, 'read_message should return the written message')
 
       assert.ok(result.from.includes('Alice'), 'From header should contain sender name')
@@ -199,7 +199,7 @@ describe('maildir', () => {
   // 4. read_message
   // -----------------------------------------------------------------------
   describe('read_message', () => {
-    it('reads back a written message with all fields matching', () => {
+    it('reads back a written message with all fields matching (mark_read: false)', () => {
       const msg = make_message({
         text: 'Read me back please',
         from_name: 'Sender',
@@ -214,7 +214,7 @@ describe('maildir', () => {
       const filename = write_message(msg)
       assert.ok(filename)
 
-      const result = read_message(filename)
+      const result = read_message(filename, { mark_read: false })
       assert.ok(result, 'read_message should return a message')
 
       assert.equal(result.filename, filename)
@@ -226,11 +226,67 @@ describe('maildir', () => {
       assert.equal(result.agent_name, 'ReadAgent')
       assert.equal(result.body, 'Read me back please')
       assert.equal(result.subject, 'Read me back please')
+
+      // mark_read: false should leave the file in new/ untouched
+      assert.ok(readdirSync(join(tmp_dir, 'new')).includes(filename))
+      const cur_exists = readdirSync(tmp_dir).includes('cur')
+        ? readdirSync(join(tmp_dir, 'cur')).length
+        : 0
+      assert.equal(cur_exists, 0, 'cur/ should be empty when mark_read: false')
     })
 
     it('returns null for non-existent messages', () => {
       const result = read_message('vm-doesnotexist')
       assert.equal(result, null)
+    })
+
+    it('marks the message as read by default (moves new/ -> cur/ with S flag)', () => {
+      const filename = write_message(make_message({ text: 'auto-mark' }))!
+      assert.ok(filename)
+
+      const result = read_message(filename)
+      assert.ok(result, 'read_message should return a message')
+
+      // Filename in the returned message reflects the new on-disk name
+      assert.equal(result.filename, `${filename}:2,S`)
+      assert.equal(result.body, 'auto-mark')
+
+      // File should have moved to cur/ with S flag
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      const cur_files = readdirSync(join(tmp_dir, 'cur'))
+      assert.equal(cur_files.length, 1)
+      assert.equal(cur_files[0], `${filename}:2,S`)
+    })
+
+    it('can read a message by base name after it has been marked', () => {
+      const filename = write_message(make_message({ text: 'base-lookup' }))!
+
+      // First read auto-marks -- file is now at cur/<filename>:2,S
+      const first = read_message(filename)
+      assert.ok(first)
+      assert.equal(first.filename, `${filename}:2,S`)
+
+      // Second read via the original bare filename still finds the file (base-name lookup)
+      const second = read_message(filename, { mark_read: false })
+      assert.ok(second, 'base-name lookup should locate the flagged file')
+      assert.equal(second.body, 'base-lookup')
+      assert.equal(second.filename, `${filename}:2,S`)
+    })
+
+    it('mark_read: false on a subsequent read preserves existing flags', () => {
+      const filename = write_message(make_message({ text: 'preserve-flags' }))!
+
+      // Auto-mark first call (S flag applied)
+      read_message(filename)
+
+      // Read again with mark_read: false -- should find the :2,S file and not modify it
+      const cur_before = readdirSync(join(tmp_dir, 'cur'))
+      const result = read_message(filename, { mark_read: false })
+      const cur_after = readdirSync(join(tmp_dir, 'cur'))
+
+      assert.ok(result)
+      assert.deepEqual(cur_before, cur_after, 'cur/ contents unchanged when mark_read: false')
+      assert.equal(result.filename, `${filename}:2,S`)
     })
   })
 
@@ -506,6 +562,27 @@ describe('maildir', () => {
       const results = mark_read([filename], 'rs')
 
       assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('applies custom flags to a bulk batch in a single call', () => {
+      const f1 = write_message(make_message({ text: 'bulk-custom-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'bulk-custom-2', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'bulk-custom-3', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      // Apply custom flag set (R + S) across the batch -- matches the mark_read MCP tool API
+      const results = mark_read([f1, f2, f3], 'RS')
+
+      assert.equal(results.length, 3)
+      assert.ok(results.every(r => r.found), 'all three should be found')
+      assert.equal(results[0].new_filename, `${f1}:2,RS`)
+      assert.equal(results[1].new_filename, `${f2}:2,RS`)
+      assert.equal(results[2].new_filename, `${f3}:2,RS`)
+
+      // All files moved to cur/ with the RS flag set
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      const cur_files = readdirSync(join(tmp_dir, 'cur')).sort()
+      assert.equal(cur_files.length, 3)
+      assert.ok(cur_files.every(name => name.endsWith(':2,RS')))
     })
   })
 })

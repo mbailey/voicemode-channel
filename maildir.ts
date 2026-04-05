@@ -158,40 +158,84 @@ function to_maildir_message(filename: string, headers: Record<string, string>, b
  * resolved path is within the Maildir directory. Only returns messages
  * with X-Transport: voicemode-connect header.
  *
+ * Base-name lookup: the caller can pass either the bare filename or an
+ * already-flagged `:2,FLAGS` form -- we look up by base name across new/
+ * and cur/, matching the behaviour of mark_read.
+ *
+ * By default, a successful read marks the message as Seen (moves to cur/
+ * with S flag). Pass `{ mark_read: false }` to opt out. The returned
+ * MaildirMessage's `filename` field reflects the on-disk name after any
+ * rename (so callers can use it for subsequent operations).
+ *
  * Returns null if the file doesn't exist, fails security checks, or
  * has the wrong X-Transport header.
  */
-export function read_message(filename: string): MaildirMessage | null {
+export function read_message(
+  filename: string,
+  options: { mark_read?: boolean } = {},
+): MaildirMessage | null {
   // Path traversal prevention: reject suspicious filenames
   if (filename.includes('..') || filename.includes('/')) return null
 
+  const { mark_read: should_mark = true } = options
+
   const maildir = get_maildir_path()
   const maildir_resolved = resolve(maildir)
+  const { base } = parse_maildir_filename(filename)
 
-  // Check new/ and cur/ directories
+  // Locate the file by base name across new/ and cur/ (handles flag suffix drift)
+  let found_path: string | null = null
+  let found_name: string | null = null
+
   for (const sub of ['new', 'cur']) {
-    const file_path = join(maildir, sub, filename)
-    const resolved_path = resolve(file_path)
+    const dir_path = join(maildir, sub)
+    if (!existsSync(dir_path)) continue
 
-    // Verify resolved path is within the Maildir directory
-    if (!resolved_path.startsWith(maildir_resolved + '/')) continue
-
-    if (!existsSync(resolved_path)) continue
-
+    let entries: string[]
     try {
-      const raw = readFileSync(resolved_path, 'utf8')
-      const { headers, body } = parse_message(raw)
-
-      // Only return messages with the correct transport header
-      if (headers['X-Transport'] !== 'voicemode-connect') return null
-
-      return to_maildir_message(filename, headers, body)
+      entries = readdirSync(dir_path)
     } catch {
-      return null
+      continue
+    }
+
+    for (const entry of entries) {
+      if (parse_maildir_filename(entry).base !== base) continue
+      const candidate = join(dir_path, entry)
+      const resolved = resolve(candidate)
+      // Verify resolved path is within the Maildir directory
+      if (!resolved.startsWith(maildir_resolved + '/')) continue
+      found_path = resolved
+      found_name = entry
+      break
+    }
+    if (found_path) break
+  }
+
+  if (!found_path || !found_name) return null
+
+  let raw: string
+  try {
+    raw = readFileSync(found_path, 'utf8')
+  } catch {
+    return null
+  }
+
+  const { headers, body } = parse_message(raw)
+
+  // Only return messages with the correct transport header
+  if (headers['X-Transport'] !== 'voicemode-connect') return null
+
+  // Apply S flag (and move new/ -> cur/) unless opted out
+  let effective_name = found_name
+  if (should_mark) {
+    const results = mark_read([found_name], 'S')
+    const result = results[0]
+    if (result && result.found && result.new_filename) {
+      effective_name = result.new_filename
     }
   }
 
-  return null
+  return to_maildir_message(effective_name, headers, body)
 }
 
 /**
