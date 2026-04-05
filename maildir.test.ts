@@ -19,6 +19,8 @@ import {
   parse_maildir_filename,
   merge_flags,
   build_maildir_filename,
+  truncate_body,
+  TRUNCATION_MARKER,
 } from './maildir.js'
 import type { VoiceMessage } from './maildir.js'
 
@@ -180,8 +182,8 @@ describe('maildir', () => {
       const agent_a_inbound = list_messages({ agent_session_id: 'agent-A', direction: 'inbound' })
       assert.equal(agent_a_inbound.length, 1, 'Should find 1 inbound message for agent-A')
 
-      // All sessions (no agent_session_id filter)
-      const all = list_messages({})
+      // All sessions (no agent_session_id filter) -- include bodies to check content
+      const all = list_messages({ include_body: true })
       assert.equal(all.length, 4, 'Should find all 4 messages without filters')
 
       // Verify sort order (newest first)
@@ -189,7 +191,7 @@ describe('maildir', () => {
       assert.ok(all[3].body.includes('msg-1'), 'Last message should be oldest (msg-1)')
 
       // Limit
-      const limited = list_messages({ limit: 2 })
+      const limited = list_messages({ limit: 2, include_body: true })
       assert.equal(limited.length, 2, 'Limit should restrict result count')
       assert.ok(limited[0].body.includes('msg-4'), 'Limited results should still be newest first')
     })
@@ -585,4 +587,173 @@ describe('maildir', () => {
       assert.ok(cur_files.every(name => name.endsWith(':2,RS')))
     })
   })
+
+  // -----------------------------------------------------------------------
+  // 10. truncate_body (pure helper)
+  // -----------------------------------------------------------------------
+  describe('truncate_body', () => {
+    it('returns body unchanged when shorter than limit', () => {
+      assert.equal(truncate_body('hello', 2000), 'hello')
+    })
+
+    it('returns body unchanged when exactly at limit', () => {
+      const body = 'a'.repeat(10)
+      assert.equal(truncate_body(body, 10), body)
+    })
+
+    it('truncates and appends marker when body exceeds limit', () => {
+      const body = 'a'.repeat(50)
+      const result = truncate_body(body, 10)
+      assert.ok(result.startsWith('a'.repeat(10)))
+      assert.ok(result.endsWith(TRUNCATION_MARKER))
+    })
+
+    it('returns body unchanged when max_length is 0 (unlimited)', () => {
+      const body = 'x'.repeat(100000)
+      assert.equal(truncate_body(body, 0), body)
+    })
+
+    it('treats negative max_length as unlimited', () => {
+      const body = 'hello world'
+      assert.equal(truncate_body(body, -1), body)
+    })
+
+    it('does not append marker on empty body', () => {
+      assert.equal(truncate_body('', 100), '')
+      assert.equal(truncate_body('', 0), '')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 11. list_messages: include_body, body_max_length, unread filter
+  // -----------------------------------------------------------------------
+  describe('list_messages include_body and body_max_length', () => {
+    it('omits bodies by default (include_body: false)', () => {
+      write_message(make_message({ text: 'body text here' }))
+
+      const messages = list_messages({})
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].body, '', 'body should be empty string when include_body is false')
+    })
+
+    it('returns full body when include_body: true and body is under limit', () => {
+      write_message(make_message({ text: 'short body' }))
+
+      const messages = list_messages({ include_body: true })
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].body, 'short body')
+    })
+
+    it('truncates bodies past body_max_length with a clear marker', () => {
+      // Make a body longer than the truncation limit
+      const long_text = 'X'.repeat(100)
+      write_message(make_message({ text: long_text }))
+
+      const messages = list_messages({ include_body: true, body_max_length: 20 })
+      assert.equal(messages.length, 1)
+      assert.ok(messages[0].body.startsWith('X'.repeat(20)))
+      assert.ok(messages[0].body.endsWith(TRUNCATION_MARKER))
+      // The truncated content length should be 20 + newline + marker
+      assert.equal(messages[0].body.length, 20 + 1 + TRUNCATION_MARKER.length)
+    })
+
+    it('body_max_length: 0 returns full body without truncation', () => {
+      const long_text = 'Z'.repeat(10000)
+      write_message(make_message({ text: long_text }))
+
+      const messages = list_messages({ include_body: true, body_max_length: 0 })
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].body, long_text, 'body_max_length: 0 should return full body')
+      assert.ok(!messages[0].body.includes(TRUNCATION_MARKER), 'no truncation marker on unlimited')
+    })
+
+    it('default body_max_length is 2000 when include_body is true', () => {
+      const long_text = 'A'.repeat(3000)
+      write_message(make_message({ text: long_text }))
+
+      const messages = list_messages({ include_body: true })
+      assert.equal(messages.length, 1)
+      assert.ok(messages[0].body.length < 3000, 'body should be truncated by default 2000 limit')
+      assert.ok(messages[0].body.startsWith('A'.repeat(2000)))
+      assert.ok(messages[0].body.endsWith(TRUNCATION_MARKER))
+    })
+
+    it('returns bodies for bulk reads across multiple messages', () => {
+      write_message(make_message({ text: 'msg one', timestamp: new Date('2026-04-05T10:00:00Z') }))
+      write_message(make_message({ text: 'msg two', timestamp: new Date('2026-04-05T11:00:00Z') }))
+      write_message(make_message({ text: 'msg three', timestamp: new Date('2026-04-05T12:00:00Z') }))
+
+      const messages = list_messages({ include_body: true })
+      assert.equal(messages.length, 3)
+      // Sorted newest first
+      assert.equal(messages[0].body, 'msg three')
+      assert.equal(messages[1].body, 'msg two')
+      assert.equal(messages[2].body, 'msg one')
+    })
+  })
+
+  describe('list_messages unread filter', () => {
+    it('defaults to both read and unread (unread: undefined)', () => {
+      const f1 = write_message(make_message({ text: 'unread-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'read-2', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      // Mark f2 as seen
+      mark_read([f2], 'S')
+
+      const all = list_messages({})
+      assert.equal(all.length, 2, 'both messages should be returned when unread is omitted')
+    })
+
+    it('unread: true returns messages in new/ and cur/ files without S flag', () => {
+      const f1 = write_message(make_message({ text: 'still-unread-in-new', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'seen-in-cur', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'replied-but-not-seen', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      // f2 -> marked as Seen (S flag, moves to cur/)
+      mark_read([f2], 'S')
+      // f3 -> marked as Replied only (R flag, moves to cur/ but no S, so still unread)
+      mark_read([f3], 'R')
+
+      const unread = list_messages({ unread: true })
+      assert.equal(unread.length, 2, 'unread should include new/ file and cur/ file without S')
+      const bodies_present = unread.map(m => m.filename).sort()
+      // f1 is still in new/ with no flags; f3 is in cur/ with :2,R
+      assert.ok(bodies_present.some(n => n === f1), 'new/ file should be in unread list')
+      assert.ok(bodies_present.some(n => n === `${f3}:2,R`), 'cur/ file without S should be in unread list')
+    })
+
+    it('unread: false returns only read messages (cur/ files with S flag)', () => {
+      const f1 = write_message(make_message({ text: 'u-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'seen-1', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'seen-replied', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      mark_read([f2], 'S')
+      mark_read([f3], 'RS')
+
+      const read = list_messages({ unread: false })
+      assert.equal(read.length, 2, 'should return only messages with S flag')
+      const names = read.map(m => m.filename).sort()
+      assert.ok(names.some(n => n === `${f2}:2,S`))
+      assert.ok(names.some(n => n === `${f3}:2,RS`))
+    })
+
+    it('unread filter composes with include_body and body_max_length', () => {
+      const f1 = write_message(make_message({ text: 'unread body content', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'read body content', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      mark_read([f2], 'S')
+
+      const unread = list_messages({ unread: true, include_body: true, body_max_length: 0 })
+      assert.equal(unread.length, 1)
+      assert.equal(unread[0].body, 'unread body content')
+    })
+
+    it('unread filter returns empty list when all messages are read', () => {
+      const f1 = write_message(make_message({ text: 'one', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'two', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      mark_read([f1, f2], 'S')
+
+      const unread = list_messages({ unread: true })
+      assert.equal(unread.length, 0)
+    })
+  })
+
 })

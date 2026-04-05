@@ -276,7 +276,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         description:
           'List voice messages from the Maildir conversation history. ' +
           'By default, only shows messages from the current agent session. ' +
-          'Use all_sessions to see messages from all sessions.',
+          'Use all_sessions to see messages from all sessions. ' +
+          'Pass include_body: true to fetch bodies in bulk (truncated by body_max_length). ' +
+          'Pass unread: true to see only unread messages (no S flag).',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -292,6 +294,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
             limit: {
               type: 'number',
               description: 'Maximum number of messages to return (default: 50)',
+            },
+            include_body: {
+              type: 'boolean',
+              description: 'If true, include message bodies in the response (default: false)',
+            },
+            body_max_length: {
+              type: 'number',
+              description: 'Max body length when include_body is true; 0 = unlimited (default: 2000)',
+            },
+            unread: {
+              type: 'boolean',
+              description: 'If true, only return unread messages; if false, only read; omit for both',
             },
           },
         },
@@ -553,6 +567,9 @@ function handle_list_messages_tool(args: Record<string, unknown> | undefined) {
   const all_sessions = args?.all_sessions === true
   const direction = args?.direction as 'inbound' | 'outbound' | undefined
   const limit = typeof args?.limit === 'number' ? Math.max(1, Math.min(args.limit, 500)) : 50
+  const include_body = args?.include_body === true
+  const body_max_length = typeof args?.body_max_length === 'number' ? Math.max(0, args.body_max_length) : 2000
+  const unread = typeof args?.unread === 'boolean' ? args.unread : undefined
 
   // Default to current session unless all_sessions is true
   const agent_session_id = all_sessions ? undefined : (gateway?.agent_session_id ?? undefined)
@@ -565,12 +582,20 @@ function handle_list_messages_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const messages = list_messages({ agent_session_id, direction, limit })
+  const messages = list_messages({ agent_session_id, direction, limit, include_body, body_max_length, unread })
 
   if (messages.length === 0) {
     const scope = all_sessions ? 'any session' : 'the current session'
+    const state = unread === true ? 'unread ' : unread === false ? 'read ' : ''
     return {
-      content: [{ type: 'text', text: `No messages found for ${scope}.` }],
+      content: [{ type: 'text', text: `No ${state}messages found for ${scope}.` }],
+    }
+  }
+
+  // When bodies are requested, return structured JSON so the caller can work with them.
+  if (include_body) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }],
     }
   }
 

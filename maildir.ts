@@ -238,11 +238,36 @@ export function read_message(
   return to_maildir_message(effective_name, headers, body)
 }
 
+/** Marker appended to bodies that exceed body_max_length. */
+export const TRUNCATION_MARKER = '... [truncated]'
+
 /**
- * List messages from the Maildir, filtered by session and direction.
+ * Truncate a body string to at most `max_length` characters, appending a
+ * clear marker when truncation happens. A `max_length` of 0 means unlimited
+ * (returns the body unchanged). Negative values are treated as 0.
+ */
+export function truncate_body(body: string, max_length: number): string {
+  if (max_length <= 0) return body
+  if (body.length <= max_length) return body
+  return body.slice(0, max_length) + '\n' + TRUNCATION_MARKER
+}
+
+/**
+ * List messages from the Maildir, filtered by session, direction, and read state.
  *
  * Scans both new/ and cur/ directories. Only includes messages with
  * X-Transport: voicemode-connect header.
+ *
+ * Options:
+ *   - include_body: when false (default), returned messages have body=''
+ *     to keep responses compact. Set true to return bodies (truncated by
+ *     body_max_length).
+ *   - body_max_length: maximum body length when include_body is true.
+ *     Default 2000. Pass 0 for unlimited. Bodies past the limit get a
+ *     "... [truncated]" marker appended.
+ *   - unread: undefined (default) returns both read and unread. true
+ *     returns only unread messages (in new/, or in cur/ without S flag).
+ *     false returns only read messages (in cur/ with S flag).
  *
  * Returns messages sorted by date descending (newest first).
  */
@@ -250,8 +275,18 @@ export function list_messages(options: {
   agent_session_id?: string
   direction?: 'inbound' | 'outbound'
   limit?: number
+  include_body?: boolean
+  body_max_length?: number
+  unread?: boolean
 }): MaildirMessage[] {
-  const { agent_session_id, direction, limit = 50 } = options
+  const {
+    agent_session_id,
+    direction,
+    limit = 50,
+    include_body = false,
+    body_max_length = 2000,
+    unread,
+  } = options
   const maildir = get_maildir_path()
   const messages: MaildirMessage[] = []
 
@@ -269,6 +304,13 @@ export function list_messages(options: {
     for (const filename of filenames) {
       // Skip hidden files and non-vm files
       if (filename.startsWith('.')) continue
+
+      // Unread filter: file is unread if it's in new/, or in cur/ without the S flag.
+      if (unread !== undefined) {
+        const { flags } = parse_maildir_filename(filename)
+        const is_unread = sub === 'new' || !flags.includes('S')
+        if (is_unread !== unread) continue
+      }
 
       const file_path = join(dir_path, filename)
       let raw: string
@@ -289,7 +331,9 @@ export function list_messages(options: {
       // Filter by direction if provided
       if (direction && headers['X-VoiceMode-Direction'] !== direction) continue
 
-      messages.push(to_maildir_message(filename, headers, body))
+      const msg = to_maildir_message(filename, headers, body)
+      msg.body = include_body ? truncate_body(body, body_max_length) : ''
+      messages.push(msg)
     }
   }
 
