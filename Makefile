@@ -67,4 +67,11 @@ publish: clean audit build
 
 release:
 	@claude-plugin-release
+	@node -e 'const v=require("./.claude-plugin/plugin.json").version; const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync("./package.json","utf8")); if(pkg.version!==v){pkg.version=v; fs.writeFileSync("./package.json", JSON.stringify(pkg,null,2)+"\n"); console.log("Synced package.json to "+v);} else {console.log("package.json already at "+v);}'
+	@if [ -n "$$(git status --porcelain package.json)" ]; then \
+		VERSION=$$(node -p 'require("./.claude-plugin/plugin.json").version') && \
+		git add package.json && \
+		git commit -m "chore: sync package.json to $$VERSION" && \
+		git push; \
+	fi
 	$(MAKE) publish
