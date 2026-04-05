@@ -7,18 +7,14 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 ### Added
 
 - **Maildir persistence** -- inbound voice messages and outbound replies are now written to `~/.voicemode/maildir/channel/` in standard Maildir format, so conversation history survives across agent sessions (VMC-452)
-- **Conversation history MCP tools** -- `list_messages` to browse the Maildir inbox and `read_message` to read a message by filename (VMC-452)
+- **Conversation history MCP tools** -- `list_messages` to browse the Maildir inbox and `read_message` to read a message by filename (marks the message as read by default; pass `mark_read: false` to opt out) (VMC-452, VMC-490)
 - **Read/unread state tracking** -- messages move from `new/` to `cur/` when read, following the Maildir `:2,FLAGS` standard (S=Seen, R=Replied) that notmuch and neomutt read natively (VMC-490)
 - **`mark_read` MCP tool** -- mark one or more messages read in bulk, with a custom flag set for marking replied, flagged, or other states (VMC-490)
-- **Bulk body reads** -- `list_messages` now takes `include_body` (default false) and `body_max_length` (default 2000, 0 = unlimited) with a clear truncation marker, so agents can fetch many messages in one call (VMC-490)
+- **Bulk body reads** -- `list_messages` takes `include_body` (default false) and `body_max_length` (default 2000, 0 = unlimited) with a clear truncation marker, so agents can fetch many messages in one call (VMC-490)
 - **Unread filter** -- `list_messages` accepts `unread` (true/false/undefined) to filter by read state (VMC-490)
-- **Unread count in status** -- the `status` tool now reports the number of unread messages, supporting notification-append patterns (VMC-490)
+- **Unread count in status** -- the `status` tool reports the number of unread messages, supporting notification-append patterns (VMC-490)
 - **R-flag on reply** -- the `reply` tool accepts an optional `in_reply_to` filename and stamps the source message with the Replied flag (VMC-490)
 - **Persistence configuration** -- `VOICEMODE_MAILDIR_PATH` and `VOICEMODE_MAILDIR_ENABLED` environment variables control the Maildir location and whether persistence is active
-
-### Changed
-
-- **`read_message` auto-marks as read** -- default behaviour is to mark the message read on successful fetch; pass `mark_read: false` to opt out (VMC-490)
 
 ### Security
 
