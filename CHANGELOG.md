@@ -4,6 +4,8 @@ All notable changes to the VoiceMode Channel plugin will be documented in this f
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-05
+
 ### Added
 
 - **Maildir persistence** -- inbound voice messages and outbound replies are now written to `~/.voicemode/maildir/channel/` in standard Maildir format, so conversation history survives across agent sessions (VMC-452)

@@ -1,6 +1,6 @@
 {
   "name": "voicemode-channel",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Inbound voice/text calls to Claude Code via VoiceMode Connect",
   "author": {
     "name": "Mike Bailey",
