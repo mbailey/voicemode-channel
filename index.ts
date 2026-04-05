@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient, get_project_context } from './gateway.js'
-import { write_message, list_messages, read_message } from './maildir.js'
+import { write_message, list_messages, read_message, mark_read, count_unread } from './maildir.js'
 import type { MaildirMessage } from './maildir.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
@@ -208,7 +208,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         description:
           'Send a voice reply to the user through VoiceMode. ' +
           'Use this to respond to inbound voice channel events. ' +
-          'The reply is spoken aloud on the user\'s device via TTS.',
+          'The reply is spoken aloud on the user\'s device via TTS. ' +
+          'Pass in_reply_to to mark the source message with the R (Replied) flag.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -223,6 +224,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
             wait_for_response: {
               type: 'boolean',
               description: 'Whether to listen for user response after speaking (default: false)',
+            },
+            in_reply_to: {
+              type: 'string',
+              description: 'Filename of the inbound message being replied to; receives R flag on successful send',
             },
           },
           required: ['text'],
@@ -276,7 +281,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         description:
           'List voice messages from the Maildir conversation history. ' +
           'By default, only shows messages from the current agent session. ' +
-          'Use all_sessions to see messages from all sessions.',
+          'Use all_sessions to see messages from all sessions. ' +
+          'Pass include_body: true to fetch bodies in bulk (truncated by body_max_length). ' +
+          'Pass unread: true to see only unread messages (no S flag).',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -293,6 +300,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'number',
               description: 'Maximum number of messages to return (default: 50)',
             },
+            include_body: {
+              type: 'boolean',
+              description: 'If true, include message bodies in the response (default: false)',
+            },
+            body_max_length: {
+              type: 'number',
+              description: 'Max body length when include_body is true; 0 = unlimited (default: 2000)',
+            },
+            unread: {
+              type: 'boolean',
+              description: 'If true, only return unread messages; if false, only read; omit for both',
+            },
           },
         },
       },
@@ -300,7 +319,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         name: 'read_message',
         description:
           'Read the full content of a voice message by filename. ' +
-          'Use list_messages first to find message filenames.',
+          'Use list_messages first to find message filenames. ' +
+          'By default, marks the message as Seen (moves from new/ to cur/ with S flag). ' +
+          'Pass mark_read: false to leave the message unread.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -308,8 +329,37 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'The message filename (e.g. "vm-abc123def456")',
             },
+            mark_read: {
+              type: 'boolean',
+              description: 'Whether to mark the message as Seen on read (default: true)',
+            },
           },
           required: ['filename'],
+        },
+      },
+      {
+        name: 'mark_read',
+        description:
+          'Apply Maildir flags to one or more messages (bulk supported). ' +
+          'Default flag is "S" (Seen). Files are moved from new/ to cur/ with a ' +
+          ':2,FLAGS suffix per the Maildir spec. Flags are merged with any existing ' +
+          'flags on the file (e.g. marking an "R" message as Seen yields ":2,RS"). ' +
+          'Use this when you want to mark multiple messages read in one call, or to ' +
+          'apply non-Seen flags (R=Replied, F=Flagged, T=Trashed, D=Draft).',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            filenames: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Message filenames to mark (from list_messages)',
+            },
+            flags: {
+              type: 'string',
+              description: 'Flag letters to apply, e.g. "S", "RS" (default: "S")',
+            },
+          },
+          required: ['filenames'],
         },
       },
     ],
@@ -337,6 +387,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'read_message') {
     return handle_read_message_tool(args as Record<string, unknown> | undefined)
+  }
+
+  if (name === 'mark_read') {
+    return handle_mark_read_tool(args as Record<string, unknown> | undefined)
   }
 
   return {
@@ -387,6 +441,17 @@ function handle_status_tool() {
 
   lines.push('')
 
+  // Unread message count (supports notification-append pattern)
+  try {
+    const unread = count_unread()
+    lines.push(`Unread: ${unread}`)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    lines.push(`Unread: unavailable (${message})`)
+  }
+
+  lines.push('')
+
   // Profile
   lines.push(`Profile: set`)
   lines.push(`  Name: ${currentProfile.name}`)
@@ -416,6 +481,9 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
 
   const voice = typeof args?.voice === 'string' ? args.voice : (currentProfile.voice || undefined)
   const wait_for_response = typeof args?.wait_for_response === 'boolean' ? args.wait_for_response : undefined
+  const in_reply_to = typeof args?.in_reply_to === 'string' && args.in_reply_to.trim().length > 0
+    ? args.in_reply_to.trim()
+    : undefined
 
   // Check gateway connection
   if (!gateway || gateway.state !== 'connected') {
@@ -445,6 +513,23 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
   }
 
   log(`Sent reply via gateway: id=${msg_id} text="${truncate(text.trim(), 80)}"`)
+
+  // Apply R (Replied) flag to the source message when reply-context is provided.
+  // Best-effort -- never break reply flow if the source file is gone.
+  if (in_reply_to) {
+    try {
+      const results = mark_read([in_reply_to], 'R')
+      const r = results[0]
+      if (r?.found) {
+        log(`Marked ${in_reply_to} with R flag -> ${r.new_filename}`, 'DEBUG')
+      } else {
+        log(`R flag: source message not found: ${in_reply_to}`, 'WARN')
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      log(`R flag application failed (non-fatal): ${message}`, 'WARN')
+    }
+  }
 
   // Persist outbound message to Maildir (best-effort -- never break reply flow)
   try {
@@ -518,6 +603,9 @@ function handle_list_messages_tool(args: Record<string, unknown> | undefined) {
   const all_sessions = args?.all_sessions === true
   const direction = args?.direction as 'inbound' | 'outbound' | undefined
   const limit = typeof args?.limit === 'number' ? Math.max(1, Math.min(args.limit, 500)) : 50
+  const include_body = args?.include_body === true
+  const body_max_length = typeof args?.body_max_length === 'number' ? Math.max(0, args.body_max_length) : 2000
+  const unread = typeof args?.unread === 'boolean' ? args.unread : undefined
 
   // Default to current session unless all_sessions is true
   const agent_session_id = all_sessions ? undefined : (gateway?.agent_session_id ?? undefined)
@@ -530,12 +618,20 @@ function handle_list_messages_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const messages = list_messages({ agent_session_id, direction, limit })
+  const messages = list_messages({ agent_session_id, direction, limit, include_body, body_max_length, unread })
 
   if (messages.length === 0) {
     const scope = all_sessions ? 'any session' : 'the current session'
+    const state = unread === true ? 'unread ' : unread === false ? 'read ' : ''
     return {
-      content: [{ type: 'text', text: `No messages found for ${scope}.` }],
+      content: [{ type: 'text', text: `No ${state}messages found for ${scope}.` }],
+    }
+  }
+
+  // When bodies are requested, return structured JSON so the caller can work with them.
+  if (include_body) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }],
     }
   }
 
@@ -565,7 +661,10 @@ function handle_read_message_tool(args: Record<string, unknown> | undefined) {
     }
   }
 
-  const message = read_message(filename.trim())
+  // mark_read defaults to true -- callers pass false to opt out
+  const should_mark = typeof args?.mark_read === 'boolean' ? args.mark_read : true
+
+  const message = read_message(filename.trim(), { mark_read: should_mark })
   if (!message) {
     return {
       content: [{ type: 'text', text: `Message not found: ${filename}` }],
@@ -575,6 +674,57 @@ function handle_read_message_tool(args: Record<string, unknown> | undefined) {
 
   return {
     content: [{ type: 'text', text: JSON.stringify(message, null, 2) }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool handler: mark_read
+// ---------------------------------------------------------------------------
+
+function handle_mark_read_tool(args: Record<string, unknown> | undefined) {
+  const filenames_arg = args?.filenames
+  if (!Array.isArray(filenames_arg) || filenames_arg.length === 0) {
+    return {
+      content: [{ type: 'text', text: 'Error: filenames parameter is required and must be a non-empty array' }],
+      isError: true,
+    }
+  }
+
+  // Validate each filename is a non-empty string
+  const filenames: string[] = []
+  for (const item of filenames_arg) {
+    if (typeof item !== 'string' || item.trim().length === 0) {
+      return {
+        content: [{ type: 'text', text: 'Error: every filename must be a non-empty string' }],
+        isError: true,
+      }
+    }
+    filenames.push(item.trim())
+  }
+
+  const flags = typeof args?.flags === 'string' && args.flags.length > 0 ? args.flags : 'S'
+
+  const results = mark_read(filenames, flags)
+
+  // Format a human-readable summary alongside the structured result
+  const found_count = results.filter(r => r.found).length
+  const missing_count = results.length - found_count
+
+  const lines: string[] = []
+  lines.push(`mark_read: ${found_count}/${results.length} marked with flags=${flags}`)
+  if (missing_count > 0) {
+    lines.push(`  ${missing_count} not found`)
+  }
+  for (const r of results) {
+    if (r.found) {
+      lines.push(`  [OK]  ${r.filename} -> ${r.new_filename}`)
+    } else {
+      lines.push(`  [??]  ${r.filename} (not found)`)
+    }
+  }
+
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
   }
 }
 

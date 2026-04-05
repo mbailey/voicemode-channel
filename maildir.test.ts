@@ -10,7 +10,19 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSyn
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { write_message, read_message, list_messages, get_maildir_path } from './maildir.js'
+import {
+  write_message,
+  read_message,
+  list_messages,
+  get_maildir_path,
+  mark_read,
+  parse_maildir_filename,
+  merge_flags,
+  build_maildir_filename,
+  truncate_body,
+  TRUNCATION_MARKER,
+  count_unread,
+} from './maildir.js'
 import type { VoiceMessage } from './maildir.js'
 
 // ---------------------------------------------------------------------------
@@ -70,8 +82,8 @@ describe('maildir', () => {
       const files = readdirSync(new_dir)
       assert.ok(files.includes(filename), `File ${filename} should exist in new/`)
 
-      // Read back and verify headers
-      const result = read_message(filename)
+      // Read back and verify headers (opt out of auto-mark so file stays in new/)
+      const result = read_message(filename, { mark_read: false })
       assert.ok(result, 'read_message should return the written message')
 
       assert.ok(result.from.includes('Alice'), 'From header should contain sender name')
@@ -171,8 +183,8 @@ describe('maildir', () => {
       const agent_a_inbound = list_messages({ agent_session_id: 'agent-A', direction: 'inbound' })
       assert.equal(agent_a_inbound.length, 1, 'Should find 1 inbound message for agent-A')
 
-      // All sessions (no agent_session_id filter)
-      const all = list_messages({})
+      // All sessions (no agent_session_id filter) -- include bodies to check content
+      const all = list_messages({ include_body: true })
       assert.equal(all.length, 4, 'Should find all 4 messages without filters')
 
       // Verify sort order (newest first)
@@ -180,7 +192,7 @@ describe('maildir', () => {
       assert.ok(all[3].body.includes('msg-1'), 'Last message should be oldest (msg-1)')
 
       // Limit
-      const limited = list_messages({ limit: 2 })
+      const limited = list_messages({ limit: 2, include_body: true })
       assert.equal(limited.length, 2, 'Limit should restrict result count')
       assert.ok(limited[0].body.includes('msg-4'), 'Limited results should still be newest first')
     })
@@ -190,7 +202,7 @@ describe('maildir', () => {
   // 4. read_message
   // -----------------------------------------------------------------------
   describe('read_message', () => {
-    it('reads back a written message with all fields matching', () => {
+    it('reads back a written message with all fields matching (mark_read: false)', () => {
       const msg = make_message({
         text: 'Read me back please',
         from_name: 'Sender',
@@ -205,7 +217,7 @@ describe('maildir', () => {
       const filename = write_message(msg)
       assert.ok(filename)
 
-      const result = read_message(filename)
+      const result = read_message(filename, { mark_read: false })
       assert.ok(result, 'read_message should return a message')
 
       assert.equal(result.filename, filename)
@@ -217,11 +229,67 @@ describe('maildir', () => {
       assert.equal(result.agent_name, 'ReadAgent')
       assert.equal(result.body, 'Read me back please')
       assert.equal(result.subject, 'Read me back please')
+
+      // mark_read: false should leave the file in new/ untouched
+      assert.ok(readdirSync(join(tmp_dir, 'new')).includes(filename))
+      const cur_exists = readdirSync(tmp_dir).includes('cur')
+        ? readdirSync(join(tmp_dir, 'cur')).length
+        : 0
+      assert.equal(cur_exists, 0, 'cur/ should be empty when mark_read: false')
     })
 
     it('returns null for non-existent messages', () => {
       const result = read_message('vm-doesnotexist')
       assert.equal(result, null)
+    })
+
+    it('marks the message as read by default (moves new/ -> cur/ with S flag)', () => {
+      const filename = write_message(make_message({ text: 'auto-mark' }))!
+      assert.ok(filename)
+
+      const result = read_message(filename)
+      assert.ok(result, 'read_message should return a message')
+
+      // Filename in the returned message reflects the new on-disk name
+      assert.equal(result.filename, `${filename}:2,S`)
+      assert.equal(result.body, 'auto-mark')
+
+      // File should have moved to cur/ with S flag
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      const cur_files = readdirSync(join(tmp_dir, 'cur'))
+      assert.equal(cur_files.length, 1)
+      assert.equal(cur_files[0], `${filename}:2,S`)
+    })
+
+    it('can read a message by base name after it has been marked', () => {
+      const filename = write_message(make_message({ text: 'base-lookup' }))!
+
+      // First read auto-marks -- file is now at cur/<filename>:2,S
+      const first = read_message(filename)
+      assert.ok(first)
+      assert.equal(first.filename, `${filename}:2,S`)
+
+      // Second read via the original bare filename still finds the file (base-name lookup)
+      const second = read_message(filename, { mark_read: false })
+      assert.ok(second, 'base-name lookup should locate the flagged file')
+      assert.equal(second.body, 'base-lookup')
+      assert.equal(second.filename, `${filename}:2,S`)
+    })
+
+    it('mark_read: false on a subsequent read preserves existing flags', () => {
+      const filename = write_message(make_message({ text: 'preserve-flags' }))!
+
+      // Auto-mark first call (S flag applied)
+      read_message(filename)
+
+      // Read again with mark_read: false -- should find the :2,S file and not modify it
+      const cur_before = readdirSync(join(tmp_dir, 'cur'))
+      const result = read_message(filename, { mark_read: false })
+      const cur_after = readdirSync(join(tmp_dir, 'cur'))
+
+      assert.ok(result)
+      assert.deepEqual(cur_before, cur_after, 'cur/ contents unchanged when mark_read: false')
+      assert.equal(result.filename, `${filename}:2,S`)
     })
   })
 
@@ -300,4 +368,523 @@ describe('maildir', () => {
       assert.equal(file_count, 0, 'No files should be written when persistence is disabled')
     })
   })
+
+  // -----------------------------------------------------------------------
+  // 8. Maildir filename parsing helpers (pure functions)
+  // -----------------------------------------------------------------------
+  describe('parse_maildir_filename', () => {
+    it('returns empty flags for a bare basename', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123'), { base: 'vm-abc123', flags: '' })
+    })
+
+    it('splits base and flags on :2, marker', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123:2,S'), { base: 'vm-abc123', flags: 'S' })
+      assert.deepEqual(parse_maildir_filename('vm-abc123:2,RS'), { base: 'vm-abc123', flags: 'RS' })
+    })
+
+    it('preserves empty flags after :2, marker', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123:2,'), { base: 'vm-abc123', flags: '' })
+    })
+
+    it('treats unknown info markers (:1,) as no flags', () => {
+      assert.deepEqual(parse_maildir_filename('vm-abc123:1,foo'), { base: 'vm-abc123:1,foo', flags: '' })
+    })
+  })
+
+  describe('merge_flags', () => {
+    it('returns sorted unique flags', () => {
+      assert.equal(merge_flags('S', 'R'), 'RS')
+      assert.equal(merge_flags('RS', 'S'), 'RS')
+      assert.equal(merge_flags('', 'S'), 'S')
+      assert.equal(merge_flags('S', ''), 'S')
+    })
+
+    it('deduplicates and sorts across both inputs', () => {
+      assert.equal(merge_flags('SF', 'RT'), 'FRST')
+      assert.equal(merge_flags('RRR', 'SSS'), 'RS')
+    })
+
+    it('normalizes to uppercase', () => {
+      assert.equal(merge_flags('s', 'r'), 'RS')
+      assert.equal(merge_flags('rS', 'f'), 'FRS')
+    })
+
+    it('drops non-letter characters', () => {
+      assert.equal(merge_flags('S1', 'R!'), 'RS')
+      assert.equal(merge_flags(',', ':2,S'), 'S')
+    })
+  })
+
+  describe('build_maildir_filename', () => {
+    it('returns base alone when flags are empty', () => {
+      assert.equal(build_maildir_filename('vm-abc', ''), 'vm-abc')
+    })
+
+    it('appends :2, prefix when flags are set', () => {
+      assert.equal(build_maildir_filename('vm-abc', 'S'), 'vm-abc:2,S')
+      assert.equal(build_maildir_filename('vm-abc', 'RS'), 'vm-abc:2,RS')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 9. mark_read
+  // -----------------------------------------------------------------------
+  describe('mark_read', () => {
+    it('moves a file from new/ to cur/ with default S flag', () => {
+      const filename = write_message(make_message({ text: 'mark-me-read' }))!
+      assert.ok(filename)
+
+      const results = mark_read([filename])
+
+      assert.equal(results.length, 1)
+      assert.equal(results[0].filename, filename)
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,S`)
+
+      // File should no longer exist in new/
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      // File should exist in cur/ with :2,S suffix
+      const cur_files = readdirSync(join(tmp_dir, 'cur'))
+      assert.equal(cur_files.length, 1)
+      assert.equal(cur_files[0], `${filename}:2,S`)
+    })
+
+    it('supports custom flag sets and sorts them alphabetically', () => {
+      const filename = write_message(make_message({ text: 'custom-flags' }))!
+      const results = mark_read([filename], 'RS')
+
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+
+      // Verify on disk
+      const cur_files = readdirSync(join(tmp_dir, 'cur'))
+      assert.ok(cur_files.includes(`${filename}:2,RS`))
+    })
+
+    it('sorts flags alphabetically even when input is not sorted', () => {
+      const filename = write_message(make_message({ text: 'unsorted-input' }))!
+      const results = mark_read([filename], 'SR')
+
+      // Output must be alphabetically sorted per Maildir spec
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('merges with existing flags when called twice', () => {
+      const filename = write_message(make_message({ text: 'merge-flags' }))!
+
+      // First mark: just S
+      const first = mark_read([filename], 'S')
+      assert.equal(first[0].new_filename, `${filename}:2,S`)
+
+      // Second mark: add R -- should merge to RS (pass the already-flagged name)
+      const second = mark_read([`${filename}:2,S`], 'R')
+      assert.equal(second[0].new_filename, `${filename}:2,RS`)
+
+      // Only one file should exist now (merge, not duplicate)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+    })
+
+    it('looks up by base name so the caller can pass either form', () => {
+      const filename = write_message(make_message({ text: 'by-base' }))!
+
+      // First mark to get into cur/ with :2,S suffix
+      mark_read([filename], 'S')
+
+      // Now call again with the *bare* base name (no suffix) -- should still find it
+      const results = mark_read([filename], 'R')
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('deduplicates repeated flag letters', () => {
+      const filename = write_message(make_message({ text: 'dedup-flags' }))!
+      const results = mark_read([filename], 'SSSRS')
+
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('is idempotent when the same flag is applied twice', () => {
+      const filename = write_message(make_message({ text: 'idempotent' }))!
+
+      mark_read([filename], 'S')
+      const second = mark_read([`${filename}:2,S`], 'S')
+
+      assert.equal(second[0].found, true)
+      assert.equal(second[0].new_filename, `${filename}:2,S`)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+    })
+
+    it('handles bulk filenames in a single call', () => {
+      const f1 = write_message(make_message({ text: 'bulk-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'bulk-2', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'bulk-3', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      const results = mark_read([f1, f2, f3], 'S')
+
+      assert.equal(results.length, 3)
+      assert.ok(results.every(r => r.found), 'all three should be found')
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 3)
+    })
+
+    it('returns found=false for missing filenames without crashing', () => {
+      // Write one real message
+      const real = write_message(make_message({ text: 'real' }))!
+
+      const results = mark_read([real, 'vm-doesnotexist'], 'S')
+
+      assert.equal(results.length, 2)
+      assert.equal(results[0].found, true)
+      assert.equal(results[1].found, false)
+      assert.equal(results[1].new_filename, null)
+    })
+
+    it('rejects filenames with path traversal', () => {
+      const results = mark_read(['../../etc/passwd', '../secret', 'subdir/file'], 'S')
+
+      assert.equal(results.length, 3)
+      assert.ok(results.every(r => !r.found), 'all path-traversal attempts should fail')
+      assert.ok(results.every(r => r.new_filename === null))
+    })
+
+    it('creates cur/ directory if it does not already exist', () => {
+      const filename = write_message(make_message({ text: 'no-cur-yet' }))!
+
+      // Remove cur/ to simulate a fresh maildir (write_message creates it but let's be sure)
+      rmSync(join(tmp_dir, 'cur'), { recursive: true, force: true })
+      assert.equal(readdirSync(tmp_dir).includes('cur'), false)
+
+      const results = mark_read([filename], 'S')
+      assert.equal(results[0].found, true)
+      assert.ok(readdirSync(tmp_dir).includes('cur'))
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+    })
+
+    it('accepts flag letters in mixed case', () => {
+      const filename = write_message(make_message({ text: 'mixed-case' }))!
+      const results = mark_read([filename], 'rs')
+
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+    })
+
+    it('applies custom flags to a bulk batch in a single call', () => {
+      const f1 = write_message(make_message({ text: 'bulk-custom-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'bulk-custom-2', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'bulk-custom-3', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      // Apply custom flag set (R + S) across the batch -- matches the mark_read MCP tool API
+      const results = mark_read([f1, f2, f3], 'RS')
+
+      assert.equal(results.length, 3)
+      assert.ok(results.every(r => r.found), 'all three should be found')
+      assert.equal(results[0].new_filename, `${f1}:2,RS`)
+      assert.equal(results[1].new_filename, `${f2}:2,RS`)
+      assert.equal(results[2].new_filename, `${f3}:2,RS`)
+
+      // All files moved to cur/ with the RS flag set
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      const cur_files = readdirSync(join(tmp_dir, 'cur')).sort()
+      assert.equal(cur_files.length, 3)
+      assert.ok(cur_files.every(name => name.endsWith(':2,RS')))
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 10. truncate_body (pure helper)
+  // -----------------------------------------------------------------------
+  describe('truncate_body', () => {
+    it('returns body unchanged when shorter than limit', () => {
+      assert.equal(truncate_body('hello', 2000), 'hello')
+    })
+
+    it('returns body unchanged when exactly at limit', () => {
+      const body = 'a'.repeat(10)
+      assert.equal(truncate_body(body, 10), body)
+    })
+
+    it('truncates and appends marker when body exceeds limit', () => {
+      const body = 'a'.repeat(50)
+      const result = truncate_body(body, 10)
+      assert.ok(result.startsWith('a'.repeat(10)))
+      assert.ok(result.endsWith(TRUNCATION_MARKER))
+    })
+
+    it('returns body unchanged when max_length is 0 (unlimited)', () => {
+      const body = 'x'.repeat(100000)
+      assert.equal(truncate_body(body, 0), body)
+    })
+
+    it('treats negative max_length as unlimited', () => {
+      const body = 'hello world'
+      assert.equal(truncate_body(body, -1), body)
+    })
+
+    it('does not append marker on empty body', () => {
+      assert.equal(truncate_body('', 100), '')
+      assert.equal(truncate_body('', 0), '')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 11. list_messages: include_body, body_max_length, unread filter
+  // -----------------------------------------------------------------------
+  describe('list_messages include_body and body_max_length', () => {
+    it('omits bodies by default (include_body: false)', () => {
+      write_message(make_message({ text: 'body text here' }))
+
+      const messages = list_messages({})
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].body, '', 'body should be empty string when include_body is false')
+    })
+
+    it('returns full body when include_body: true and body is under limit', () => {
+      write_message(make_message({ text: 'short body' }))
+
+      const messages = list_messages({ include_body: true })
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].body, 'short body')
+    })
+
+    it('truncates bodies past body_max_length with a clear marker', () => {
+      // Make a body longer than the truncation limit
+      const long_text = 'X'.repeat(100)
+      write_message(make_message({ text: long_text }))
+
+      const messages = list_messages({ include_body: true, body_max_length: 20 })
+      assert.equal(messages.length, 1)
+      assert.ok(messages[0].body.startsWith('X'.repeat(20)))
+      assert.ok(messages[0].body.endsWith(TRUNCATION_MARKER))
+      // The truncated content length should be 20 + newline + marker
+      assert.equal(messages[0].body.length, 20 + 1 + TRUNCATION_MARKER.length)
+    })
+
+    it('body_max_length: 0 returns full body without truncation', () => {
+      const long_text = 'Z'.repeat(10000)
+      write_message(make_message({ text: long_text }))
+
+      const messages = list_messages({ include_body: true, body_max_length: 0 })
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].body, long_text, 'body_max_length: 0 should return full body')
+      assert.ok(!messages[0].body.includes(TRUNCATION_MARKER), 'no truncation marker on unlimited')
+    })
+
+    it('default body_max_length is 2000 when include_body is true', () => {
+      const long_text = 'A'.repeat(3000)
+      write_message(make_message({ text: long_text }))
+
+      const messages = list_messages({ include_body: true })
+      assert.equal(messages.length, 1)
+      assert.ok(messages[0].body.length < 3000, 'body should be truncated by default 2000 limit')
+      assert.ok(messages[0].body.startsWith('A'.repeat(2000)))
+      assert.ok(messages[0].body.endsWith(TRUNCATION_MARKER))
+    })
+
+    it('returns bodies for bulk reads across multiple messages', () => {
+      write_message(make_message({ text: 'msg one', timestamp: new Date('2026-04-05T10:00:00Z') }))
+      write_message(make_message({ text: 'msg two', timestamp: new Date('2026-04-05T11:00:00Z') }))
+      write_message(make_message({ text: 'msg three', timestamp: new Date('2026-04-05T12:00:00Z') }))
+
+      const messages = list_messages({ include_body: true })
+      assert.equal(messages.length, 3)
+      // Sorted newest first
+      assert.equal(messages[0].body, 'msg three')
+      assert.equal(messages[1].body, 'msg two')
+      assert.equal(messages[2].body, 'msg one')
+    })
+  })
+
+  describe('list_messages unread filter', () => {
+    it('defaults to both read and unread (unread: undefined)', () => {
+      const f1 = write_message(make_message({ text: 'unread-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'read-2', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      // Mark f2 as seen
+      mark_read([f2], 'S')
+
+      const all = list_messages({})
+      assert.equal(all.length, 2, 'both messages should be returned when unread is omitted')
+    })
+
+    it('unread: true returns messages in new/ and cur/ files without S flag', () => {
+      const f1 = write_message(make_message({ text: 'still-unread-in-new', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'seen-in-cur', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'replied-but-not-seen', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      // f2 -> marked as Seen (S flag, moves to cur/)
+      mark_read([f2], 'S')
+      // f3 -> marked as Replied only (R flag, moves to cur/ but no S, so still unread)
+      mark_read([f3], 'R')
+
+      const unread = list_messages({ unread: true })
+      assert.equal(unread.length, 2, 'unread should include new/ file and cur/ file without S')
+      const bodies_present = unread.map(m => m.filename).sort()
+      // f1 is still in new/ with no flags; f3 is in cur/ with :2,R
+      assert.ok(bodies_present.some(n => n === f1), 'new/ file should be in unread list')
+      assert.ok(bodies_present.some(n => n === `${f3}:2,R`), 'cur/ file without S should be in unread list')
+    })
+
+    it('unread: false returns only read messages (cur/ files with S flag)', () => {
+      const f1 = write_message(make_message({ text: 'u-1', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'seen-1', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'seen-replied', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+
+      mark_read([f2], 'S')
+      mark_read([f3], 'RS')
+
+      const read = list_messages({ unread: false })
+      assert.equal(read.length, 2, 'should return only messages with S flag')
+      const names = read.map(m => m.filename).sort()
+      assert.ok(names.some(n => n === `${f2}:2,S`))
+      assert.ok(names.some(n => n === `${f3}:2,RS`))
+    })
+
+    it('unread filter composes with include_body and body_max_length', () => {
+      const f1 = write_message(make_message({ text: 'unread body content', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'read body content', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      mark_read([f2], 'S')
+
+      const unread = list_messages({ unread: true, include_body: true, body_max_length: 0 })
+      assert.equal(unread.length, 1)
+      assert.equal(unread[0].body, 'unread body content')
+    })
+
+    it('unread filter returns empty list when all messages are read', () => {
+      const f1 = write_message(make_message({ text: 'one', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'two', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      mark_read([f1, f2], 'S')
+
+      const unread = list_messages({ unread: true })
+      assert.equal(unread.length, 0)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 12. count_unread
+  // -----------------------------------------------------------------------
+  describe('count_unread', () => {
+    it('returns 0 when the Maildir is empty', () => {
+      assert.equal(count_unread(), 0)
+    })
+
+    it('returns 0 when the Maildir directories do not exist', () => {
+      // tmp_dir exists but has no new/cur subdirs yet
+      assert.equal(count_unread(), 0)
+    })
+
+    it('counts files in new/ (all unread)', () => {
+      write_message(make_message({ text: 'one', timestamp: new Date('2026-04-05T10:00:00Z') }))
+      write_message(make_message({ text: 'two', timestamp: new Date('2026-04-05T11:00:00Z') }))
+      write_message(make_message({ text: 'three', timestamp: new Date('2026-04-05T12:00:00Z') }))
+
+      assert.equal(count_unread(), 3)
+    })
+
+    it('skips cur/ files with the S flag', () => {
+      const f1 = write_message(make_message({ text: 'keep-unread', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'mark-seen', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+
+      mark_read([f2], 'S')
+
+      // f1 still unread in new/, f2 is seen in cur/ -- count should be 1
+      assert.equal(count_unread(), 1)
+    })
+
+    it('counts cur/ files that have flags but no S (e.g. :2,R)', () => {
+      const f1 = write_message(make_message({ text: 'replied-not-seen', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+
+      // Apply just R -- file moves to cur/ but is still unread (no S)
+      mark_read([f1], 'R')
+
+      assert.equal(count_unread(), 1)
+    })
+
+    it('counts :2,RS files as read (S present)', () => {
+      const f1 = write_message(make_message({ text: 'seen-and-replied', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+
+      mark_read([f1], 'RS')
+
+      assert.equal(count_unread(), 0)
+    })
+
+    it('combines new/ and cur/ counts correctly', () => {
+      const f1 = write_message(make_message({ text: 'a', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'b', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'c', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+      const f4 = write_message(make_message({ text: 'd', timestamp: new Date('2026-04-05T13:00:00Z') }))!
+
+      mark_read([f2], 'S')       // read
+      mark_read([f3], 'R')       // still unread (no S)
+      mark_read([f4], 'RS')      // read (S present)
+
+      // Unread: f1 (new/) + f3 (cur/ :2,R) = 2
+      assert.equal(count_unread(), 2)
+    })
+
+    it('ignores non-vm- files in new/ and cur/', () => {
+      // Write one real vm message
+      write_message(make_message({ text: 'real', timestamp: new Date('2026-04-05T10:00:00Z') }))
+
+      // Drop in a junk file in new/ that shouldn't be counted
+      writeFileSync(join(tmp_dir, 'new', '.hidden'), 'not a vm message')
+      writeFileSync(join(tmp_dir, 'new', 'other-prefix-file'), 'not a vm message')
+
+      // And one in cur/ that also should not be counted
+      mkdirSync(join(tmp_dir, 'cur'), { recursive: true })
+      writeFileSync(join(tmp_dir, 'cur', 'stranger-file'), 'not a vm message')
+
+      assert.equal(count_unread(), 1, 'only the vm- file should be counted')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 13. R flag on reply (mark_read with 'R' flag)
+  // -----------------------------------------------------------------------
+  describe('R flag application', () => {
+    it('applies R flag to a new/ message (moves it to cur/ with :2,R)', () => {
+      const filename = write_message(make_message({ text: 'please-reply' }))!
+
+      const results = mark_read([filename], 'R')
+
+      assert.equal(results.length, 1)
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,R`)
+
+      // File moved out of new/ into cur/ with just the R flag
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      assert.ok(readdirSync(join(tmp_dir, 'cur')).includes(`${filename}:2,R`))
+    })
+
+    it('merges R flag with existing S flag to yield :2,RS', () => {
+      const filename = write_message(make_message({ text: 'seen-then-replied' }))!
+
+      // First read marks it Seen
+      read_message(filename)
+      assert.ok(readdirSync(join(tmp_dir, 'cur')).includes(`${filename}:2,S`))
+
+      // Now reply fires -- apply R flag. Caller can pass the bare filename (base-name lookup)
+      const results = mark_read([filename], 'R')
+
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+      assert.ok(readdirSync(join(tmp_dir, 'cur')).includes(`${filename}:2,RS`))
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1, 'no duplicate files after merge')
+    })
+
+    it('R flag on an already-replied message is idempotent', () => {
+      const filename = write_message(make_message({ text: 'double-reply' }))!
+
+      mark_read([filename], 'R')
+      const second = mark_read([filename], 'R')
+
+      assert.equal(second[0].found, true)
+      assert.equal(second[0].new_filename, `${filename}:2,R`)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+    })
+
+    it('R flag returns found=false for missing source message', () => {
+      const results = mark_read(['vm-never-existed'], 'R')
+      assert.equal(results[0].found, false)
+      assert.equal(results[0].new_filename, null)
+    })
+  })
+
 })

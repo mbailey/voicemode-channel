@@ -158,47 +158,116 @@ function to_maildir_message(filename: string, headers: Record<string, string>, b
  * resolved path is within the Maildir directory. Only returns messages
  * with X-Transport: voicemode-connect header.
  *
+ * Base-name lookup: the caller can pass either the bare filename or an
+ * already-flagged `:2,FLAGS` form -- we look up by base name across new/
+ * and cur/, matching the behaviour of mark_read.
+ *
+ * By default, a successful read marks the message as Seen (moves to cur/
+ * with S flag). Pass `{ mark_read: false }` to opt out. The returned
+ * MaildirMessage's `filename` field reflects the on-disk name after any
+ * rename (so callers can use it for subsequent operations).
+ *
  * Returns null if the file doesn't exist, fails security checks, or
  * has the wrong X-Transport header.
  */
-export function read_message(filename: string): MaildirMessage | null {
+export function read_message(
+  filename: string,
+  options: { mark_read?: boolean } = {},
+): MaildirMessage | null {
   // Path traversal prevention: reject suspicious filenames
   if (filename.includes('..') || filename.includes('/')) return null
 
+  const { mark_read: should_mark = true } = options
+
   const maildir = get_maildir_path()
   const maildir_resolved = resolve(maildir)
+  const { base } = parse_maildir_filename(filename)
 
-  // Check new/ and cur/ directories
+  // Locate the file by base name across new/ and cur/ (handles flag suffix drift)
+  let found_path: string | null = null
+  let found_name: string | null = null
+
   for (const sub of ['new', 'cur']) {
-    const file_path = join(maildir, sub, filename)
-    const resolved_path = resolve(file_path)
+    const dir_path = join(maildir, sub)
+    if (!existsSync(dir_path)) continue
 
-    // Verify resolved path is within the Maildir directory
-    if (!resolved_path.startsWith(maildir_resolved + '/')) continue
-
-    if (!existsSync(resolved_path)) continue
-
+    let entries: string[]
     try {
-      const raw = readFileSync(resolved_path, 'utf8')
-      const { headers, body } = parse_message(raw)
-
-      // Only return messages with the correct transport header
-      if (headers['X-Transport'] !== 'voicemode-connect') return null
-
-      return to_maildir_message(filename, headers, body)
+      entries = readdirSync(dir_path)
     } catch {
-      return null
+      continue
+    }
+
+    for (const entry of entries) {
+      if (parse_maildir_filename(entry).base !== base) continue
+      const candidate = join(dir_path, entry)
+      const resolved = resolve(candidate)
+      // Verify resolved path is within the Maildir directory
+      if (!resolved.startsWith(maildir_resolved + '/')) continue
+      found_path = resolved
+      found_name = entry
+      break
+    }
+    if (found_path) break
+  }
+
+  if (!found_path || !found_name) return null
+
+  let raw: string
+  try {
+    raw = readFileSync(found_path, 'utf8')
+  } catch {
+    return null
+  }
+
+  const { headers, body } = parse_message(raw)
+
+  // Only return messages with the correct transport header
+  if (headers['X-Transport'] !== 'voicemode-connect') return null
+
+  // Apply S flag (and move new/ -> cur/) unless opted out
+  let effective_name = found_name
+  if (should_mark) {
+    const results = mark_read([found_name], 'S')
+    const result = results[0]
+    if (result && result.found && result.new_filename) {
+      effective_name = result.new_filename
     }
   }
 
-  return null
+  return to_maildir_message(effective_name, headers, body)
+}
+
+/** Marker appended to bodies that exceed body_max_length. */
+export const TRUNCATION_MARKER = '... [truncated]'
+
+/**
+ * Truncate a body string to at most `max_length` characters, appending a
+ * clear marker when truncation happens. A `max_length` of 0 means unlimited
+ * (returns the body unchanged). Negative values are treated as 0.
+ */
+export function truncate_body(body: string, max_length: number): string {
+  if (max_length <= 0) return body
+  if (body.length <= max_length) return body
+  return body.slice(0, max_length) + '\n' + TRUNCATION_MARKER
 }
 
 /**
- * List messages from the Maildir, filtered by session and direction.
+ * List messages from the Maildir, filtered by session, direction, and read state.
  *
  * Scans both new/ and cur/ directories. Only includes messages with
  * X-Transport: voicemode-connect header.
+ *
+ * Options:
+ *   - include_body: when false (default), returned messages have body=''
+ *     to keep responses compact. Set true to return bodies (truncated by
+ *     body_max_length).
+ *   - body_max_length: maximum body length when include_body is true.
+ *     Default 2000. Pass 0 for unlimited. Bodies past the limit get a
+ *     "... [truncated]" marker appended.
+ *   - unread: undefined (default) returns both read and unread. true
+ *     returns only unread messages (in new/, or in cur/ without S flag).
+ *     false returns only read messages (in cur/ with S flag).
  *
  * Returns messages sorted by date descending (newest first).
  */
@@ -206,8 +275,18 @@ export function list_messages(options: {
   agent_session_id?: string
   direction?: 'inbound' | 'outbound'
   limit?: number
+  include_body?: boolean
+  body_max_length?: number
+  unread?: boolean
 }): MaildirMessage[] {
-  const { agent_session_id, direction, limit = 50 } = options
+  const {
+    agent_session_id,
+    direction,
+    limit = 50,
+    include_body = false,
+    body_max_length = 2000,
+    unread,
+  } = options
   const maildir = get_maildir_path()
   const messages: MaildirMessage[] = []
 
@@ -225,6 +304,13 @@ export function list_messages(options: {
     for (const filename of filenames) {
       // Skip hidden files and non-vm files
       if (filename.startsWith('.')) continue
+
+      // Unread filter: file is unread if it's in new/, or in cur/ without the S flag.
+      if (unread !== undefined) {
+        const { flags } = parse_maildir_filename(filename)
+        const is_unread = sub === 'new' || !flags.includes('S')
+        if (is_unread !== unread) continue
+      }
 
       const file_path = join(dir_path, filename)
       let raw: string
@@ -245,7 +331,9 @@ export function list_messages(options: {
       // Filter by direction if provided
       if (direction && headers['X-VoiceMode-Direction'] !== direction) continue
 
-      messages.push(to_maildir_message(filename, headers, body))
+      const msg = to_maildir_message(filename, headers, body)
+      msg.body = include_body ? truncate_body(body, body_max_length) : ''
+      messages.push(msg)
     }
   }
 
@@ -261,4 +349,191 @@ export function list_messages(options: {
   })
 
   return messages.slice(0, limit)
+}
+
+// ---------------------------------------------------------------------------
+// Maildir flag operations (mark_read)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a Maildir filename into its base and flag components.
+ *
+ * Maildir spec: filenames in cur/ use the form `<base>:2,<flags>` where flags
+ * are ASCII letters sorted alphabetically (e.g. "RS" = Replied + Seen).
+ * Files in new/ typically have no suffix.
+ *
+ * Only the experimental `:2,` variant is recognized -- `:1,` filenames are
+ * treated as having no flags, since that form is not used by notmuch/neomutt.
+ */
+export function parse_maildir_filename(filename: string): { base: string; flags: string } {
+  const marker = ':2,'
+  const idx = filename.lastIndexOf(marker)
+  if (idx < 0) return { base: filename, flags: '' }
+  return { base: filename.slice(0, idx), flags: filename.slice(idx + marker.length) }
+}
+
+/**
+ * Merge two flag strings into a single set of unique, alphabetically sorted
+ * uppercase ASCII-letter flags.
+ *
+ * Non-letter characters are dropped. Case is normalized to uppercase.
+ * Duplicates are removed. Output is sorted (standard Maildir flag order).
+ */
+export function merge_flags(existing: string, new_flags: string): string {
+  const letters = new Set<string>()
+  for (const ch of (existing + new_flags).toUpperCase()) {
+    if (ch >= 'A' && ch <= 'Z') letters.add(ch)
+  }
+  return Array.from(letters).sort().join('')
+}
+
+/**
+ * Build a full Maildir filename from its base and flag components.
+ * When flags is empty, returns just the base (suitable for new/ files).
+ */
+export function build_maildir_filename(base: string, flags: string): string {
+  return flags.length === 0 ? base : `${base}:2,${flags}`
+}
+
+/**
+ * Count unread messages in the Maildir.
+ *
+ * Unread = files in new/ (never touched) + files in cur/ without the S flag.
+ * Filters by filename prefix `vm-` so we don't have to read file contents to
+ * decide whether a file is a voicemode-channel message -- keeps the counter
+ * cheap enough to call on every status check / notification append.
+ */
+export function count_unread(): number {
+  const maildir = get_maildir_path()
+  let count = 0
+
+  // new/ -- every vm-* file is unread by definition
+  const new_dir = join(maildir, 'new')
+  if (existsSync(new_dir)) {
+    try {
+      for (const entry of readdirSync(new_dir)) {
+        if (entry.startsWith('vm-')) count++
+      }
+    } catch { /* ignore */ }
+  }
+
+  // cur/ -- vm-* files without the S flag are still unread
+  const cur_dir = join(maildir, 'cur')
+  if (existsSync(cur_dir)) {
+    try {
+      for (const entry of readdirSync(cur_dir)) {
+        if (!entry.startsWith('vm-')) continue
+        const { flags } = parse_maildir_filename(entry)
+        if (!flags.includes('S')) count++
+      }
+    } catch { /* ignore */ }
+  }
+
+  return count
+}
+
+export interface MarkReadResult {
+  /** The filename as passed in by the caller. */
+  filename: string
+  /** New filename (with flags applied) if the file was found and renamed. */
+  new_filename: string | null
+  /** True if the file was located in new/ or cur/. */
+  found: boolean
+}
+
+/**
+ * Mark one or more messages with Maildir flags, moving them from new/ to cur/.
+ *
+ * For each filename:
+ *   1. Locate the file by its base name (with or without a :2,FLAGS suffix)
+ *      in either new/ or cur/.
+ *   2. Merge the requested flags with any existing flags (unique, sorted).
+ *   3. Rename the file to `<base>:2,<flags>` in cur/.
+ *
+ * Security: filenames containing '..' or '/' are rejected (returns found=false).
+ *
+ * Idempotent: marking an already-marked file with the same flags is a no-op
+ * rename (the file is already in cur/ with those flags).
+ *
+ * @param filenames Basenames of Maildir files (as returned by list_messages)
+ * @param flags Letters to apply (default "S" = Seen). Case-insensitive.
+ * @returns One result per input filename, in the same order.
+ */
+export function mark_read(filenames: string[], flags: string = 'S'): MarkReadResult[] {
+  const maildir = get_maildir_path()
+  const maildir_resolved = resolve(maildir)
+  const cur_dir = join(maildir, 'cur')
+
+  // Ensure cur/ exists (may not if nothing has been marked yet)
+  mkdirSync(cur_dir, { recursive: true })
+
+  const results: MarkReadResult[] = []
+
+  for (const filename of filenames) {
+    // Path traversal prevention
+    if (filename.includes('..') || filename.includes('/')) {
+      results.push({ filename, new_filename: null, found: false })
+      continue
+    }
+
+    const { base } = parse_maildir_filename(filename)
+
+    // Search both new/ and cur/ for a file whose base matches.
+    // The on-disk name may differ from `filename` if flags were previously applied.
+    let found_path: string | null = null
+    let found_sub: string | null = null
+    let found_name: string | null = null
+
+    for (const sub of ['new', 'cur']) {
+      const dir_path = join(maildir, sub)
+      if (!existsSync(dir_path)) continue
+
+      let entries: string[]
+      try {
+        entries = readdirSync(dir_path)
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        if (parse_maildir_filename(entry).base === base) {
+          const candidate = join(dir_path, entry)
+          const resolved = resolve(candidate)
+          // Verify resolved path is within the Maildir directory
+          if (!resolved.startsWith(maildir_resolved + '/')) continue
+          found_path = resolved
+          found_sub = sub
+          found_name = entry
+          break
+        }
+      }
+      if (found_path) break
+    }
+
+    if (!found_path || !found_sub || !found_name) {
+      results.push({ filename, new_filename: null, found: false })
+      continue
+    }
+
+    // Merge existing flags with requested flags
+    const existing_flags = parse_maildir_filename(found_name).flags
+    const merged = merge_flags(existing_flags, flags)
+    const new_name = build_maildir_filename(base, merged)
+    const new_path = join(cur_dir, new_name)
+
+    // If source == destination, it's a no-op (already marked in cur/)
+    if (found_path === resolve(new_path)) {
+      results.push({ filename, new_filename: new_name, found: true })
+      continue
+    }
+
+    try {
+      renameSync(found_path, new_path)
+      results.push({ filename, new_filename: new_name, found: true })
+    } catch {
+      results.push({ filename, new_filename: null, found: false })
+    }
+  }
+
+  return results
 }
