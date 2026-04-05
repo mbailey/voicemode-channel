@@ -21,6 +21,7 @@ import {
   build_maildir_filename,
   truncate_body,
   TRUNCATION_MARKER,
+  count_unread,
 } from './maildir.js'
 import type { VoiceMessage } from './maildir.js'
 
@@ -753,6 +754,136 @@ describe('maildir', () => {
 
       const unread = list_messages({ unread: true })
       assert.equal(unread.length, 0)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 12. count_unread
+  // -----------------------------------------------------------------------
+  describe('count_unread', () => {
+    it('returns 0 when the Maildir is empty', () => {
+      assert.equal(count_unread(), 0)
+    })
+
+    it('returns 0 when the Maildir directories do not exist', () => {
+      // tmp_dir exists but has no new/cur subdirs yet
+      assert.equal(count_unread(), 0)
+    })
+
+    it('counts files in new/ (all unread)', () => {
+      write_message(make_message({ text: 'one', timestamp: new Date('2026-04-05T10:00:00Z') }))
+      write_message(make_message({ text: 'two', timestamp: new Date('2026-04-05T11:00:00Z') }))
+      write_message(make_message({ text: 'three', timestamp: new Date('2026-04-05T12:00:00Z') }))
+
+      assert.equal(count_unread(), 3)
+    })
+
+    it('skips cur/ files with the S flag', () => {
+      const f1 = write_message(make_message({ text: 'keep-unread', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'mark-seen', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+
+      mark_read([f2], 'S')
+
+      // f1 still unread in new/, f2 is seen in cur/ -- count should be 1
+      assert.equal(count_unread(), 1)
+    })
+
+    it('counts cur/ files that have flags but no S (e.g. :2,R)', () => {
+      const f1 = write_message(make_message({ text: 'replied-not-seen', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+
+      // Apply just R -- file moves to cur/ but is still unread (no S)
+      mark_read([f1], 'R')
+
+      assert.equal(count_unread(), 1)
+    })
+
+    it('counts :2,RS files as read (S present)', () => {
+      const f1 = write_message(make_message({ text: 'seen-and-replied', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+
+      mark_read([f1], 'RS')
+
+      assert.equal(count_unread(), 0)
+    })
+
+    it('combines new/ and cur/ counts correctly', () => {
+      const f1 = write_message(make_message({ text: 'a', timestamp: new Date('2026-04-05T10:00:00Z') }))!
+      const f2 = write_message(make_message({ text: 'b', timestamp: new Date('2026-04-05T11:00:00Z') }))!
+      const f3 = write_message(make_message({ text: 'c', timestamp: new Date('2026-04-05T12:00:00Z') }))!
+      const f4 = write_message(make_message({ text: 'd', timestamp: new Date('2026-04-05T13:00:00Z') }))!
+
+      mark_read([f2], 'S')       // read
+      mark_read([f3], 'R')       // still unread (no S)
+      mark_read([f4], 'RS')      // read (S present)
+
+      // Unread: f1 (new/) + f3 (cur/ :2,R) = 2
+      assert.equal(count_unread(), 2)
+    })
+
+    it('ignores non-vm- files in new/ and cur/', () => {
+      // Write one real vm message
+      write_message(make_message({ text: 'real', timestamp: new Date('2026-04-05T10:00:00Z') }))
+
+      // Drop in a junk file in new/ that shouldn't be counted
+      writeFileSync(join(tmp_dir, 'new', '.hidden'), 'not a vm message')
+      writeFileSync(join(tmp_dir, 'new', 'other-prefix-file'), 'not a vm message')
+
+      // And one in cur/ that also should not be counted
+      mkdirSync(join(tmp_dir, 'cur'), { recursive: true })
+      writeFileSync(join(tmp_dir, 'cur', 'stranger-file'), 'not a vm message')
+
+      assert.equal(count_unread(), 1, 'only the vm- file should be counted')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // 13. R flag on reply (mark_read with 'R' flag)
+  // -----------------------------------------------------------------------
+  describe('R flag application', () => {
+    it('applies R flag to a new/ message (moves it to cur/ with :2,R)', () => {
+      const filename = write_message(make_message({ text: 'please-reply' }))!
+
+      const results = mark_read([filename], 'R')
+
+      assert.equal(results.length, 1)
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,R`)
+
+      // File moved out of new/ into cur/ with just the R flag
+      assert.equal(readdirSync(join(tmp_dir, 'new')).length, 0)
+      assert.ok(readdirSync(join(tmp_dir, 'cur')).includes(`${filename}:2,R`))
+    })
+
+    it('merges R flag with existing S flag to yield :2,RS', () => {
+      const filename = write_message(make_message({ text: 'seen-then-replied' }))!
+
+      // First read marks it Seen
+      read_message(filename)
+      assert.ok(readdirSync(join(tmp_dir, 'cur')).includes(`${filename}:2,S`))
+
+      // Now reply fires -- apply R flag. Caller can pass the bare filename (base-name lookup)
+      const results = mark_read([filename], 'R')
+
+      assert.equal(results[0].found, true)
+      assert.equal(results[0].new_filename, `${filename}:2,RS`)
+      assert.ok(readdirSync(join(tmp_dir, 'cur')).includes(`${filename}:2,RS`))
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1, 'no duplicate files after merge')
+    })
+
+    it('R flag on an already-replied message is idempotent', () => {
+      const filename = write_message(make_message({ text: 'double-reply' }))!
+
+      mark_read([filename], 'R')
+      const second = mark_read([filename], 'R')
+
+      assert.equal(second[0].found, true)
+      assert.equal(second[0].new_filename, `${filename}:2,R`)
+      assert.equal(readdirSync(join(tmp_dir, 'cur')).length, 1)
+    })
+
+    it('R flag returns found=false for missing source message', () => {
+      const results = mark_read(['vm-never-existed'], 'R')
+      assert.equal(results[0].found, false)
+      assert.equal(results[0].new_filename, null)
     })
   })
 

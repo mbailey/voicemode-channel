@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { GatewayClient, get_project_context } from './gateway.js'
-import { write_message, list_messages, read_message, mark_read } from './maildir.js'
+import { write_message, list_messages, read_message, mark_read, count_unread } from './maildir.js'
 import type { MaildirMessage } from './maildir.js'
 import type { ProfileData } from './gateway.js'
 import { login } from './auth.js'
@@ -208,7 +208,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         description:
           'Send a voice reply to the user through VoiceMode. ' +
           'Use this to respond to inbound voice channel events. ' +
-          'The reply is spoken aloud on the user\'s device via TTS.',
+          'The reply is spoken aloud on the user\'s device via TTS. ' +
+          'Pass in_reply_to to mark the source message with the R (Replied) flag.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -223,6 +224,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
             wait_for_response: {
               type: 'boolean',
               description: 'Whether to listen for user response after speaking (default: false)',
+            },
+            in_reply_to: {
+              type: 'string',
+              description: 'Filename of the inbound message being replied to; receives R flag on successful send',
             },
           },
           required: ['text'],
@@ -436,6 +441,17 @@ function handle_status_tool() {
 
   lines.push('')
 
+  // Unread message count (supports notification-append pattern)
+  try {
+    const unread = count_unread()
+    lines.push(`Unread: ${unread}`)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    lines.push(`Unread: unavailable (${message})`)
+  }
+
+  lines.push('')
+
   // Profile
   lines.push(`Profile: set`)
   lines.push(`  Name: ${currentProfile.name}`)
@@ -465,6 +481,9 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
 
   const voice = typeof args?.voice === 'string' ? args.voice : (currentProfile.voice || undefined)
   const wait_for_response = typeof args?.wait_for_response === 'boolean' ? args.wait_for_response : undefined
+  const in_reply_to = typeof args?.in_reply_to === 'string' && args.in_reply_to.trim().length > 0
+    ? args.in_reply_to.trim()
+    : undefined
 
   // Check gateway connection
   if (!gateway || gateway.state !== 'connected') {
@@ -494,6 +513,23 @@ function handle_reply_tool(args: Record<string, unknown> | undefined) {
   }
 
   log(`Sent reply via gateway: id=${msg_id} text="${truncate(text.trim(), 80)}"`)
+
+  // Apply R (Replied) flag to the source message when reply-context is provided.
+  // Best-effort -- never break reply flow if the source file is gone.
+  if (in_reply_to) {
+    try {
+      const results = mark_read([in_reply_to], 'R')
+      const r = results[0]
+      if (r?.found) {
+        log(`Marked ${in_reply_to} with R flag -> ${r.new_filename}`, 'DEBUG')
+      } else {
+        log(`R flag: source message not found: ${in_reply_to}`, 'WARN')
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      log(`R flag application failed (non-fatal): ${message}`, 'WARN')
+    }
+  }
 
   // Persist outbound message to Maildir (best-effort -- never break reply flow)
   try {

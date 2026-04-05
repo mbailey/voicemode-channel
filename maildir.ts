@@ -395,6 +395,43 @@ export function build_maildir_filename(base: string, flags: string): string {
   return flags.length === 0 ? base : `${base}:2,${flags}`
 }
 
+/**
+ * Count unread messages in the Maildir.
+ *
+ * Unread = files in new/ (never touched) + files in cur/ without the S flag.
+ * Filters by filename prefix `vm-` so we don't have to read file contents to
+ * decide whether a file is a voicemode-channel message -- keeps the counter
+ * cheap enough to call on every status check / notification append.
+ */
+export function count_unread(): number {
+  const maildir = get_maildir_path()
+  let count = 0
+
+  // new/ -- every vm-* file is unread by definition
+  const new_dir = join(maildir, 'new')
+  if (existsSync(new_dir)) {
+    try {
+      for (const entry of readdirSync(new_dir)) {
+        if (entry.startsWith('vm-')) count++
+      }
+    } catch { /* ignore */ }
+  }
+
+  // cur/ -- vm-* files without the S flag are still unread
+  const cur_dir = join(maildir, 'cur')
+  if (existsSync(cur_dir)) {
+    try {
+      for (const entry of readdirSync(cur_dir)) {
+        if (!entry.startsWith('vm-')) continue
+        const { flags } = parse_maildir_filename(entry)
+        if (!flags.includes('S')) count++
+      }
+    } catch { /* ignore */ }
+  }
+
+  return count
+}
+
 export interface MarkReadResult {
   /** The filename as passed in by the caller. */
   filename: string
