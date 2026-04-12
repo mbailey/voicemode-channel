@@ -148,13 +148,10 @@ const CHANNEL_VERSION = (() => {
 })()
 
 const INSTRUCTIONS = [
-  'Events from VoiceMode appear as <channel source="voicemode-channel" caller="NAME">TRANSCRIPT</channel>.',
-  'These are inbound voice messages from a user speaking on their phone or web app.',
-  'Respond using the voicemode-channel reply tool (NOT the converse tool from a different server).',
-  'The reply tool sends your response back through the same channel connection,',
-  'keeping the conversation in the same thread on the user\'s device.',
-  'Address the caller by name.',
-  'Keep responses concise -- the user is listening via text-to-speech.',
+  'VoiceMode Connect channel -- voice/text messages from users on their phone or web app.',
+  'Prefer the VoiceMode Connect converse tool for voice replies (speaks AND listens).',
+  'Fall back to the channel reply tool if converse is unavailable.',
+  'Full guidance in the voicemode-channel skill (.claude/skills/voicemode-channel.md).',
 ].join(' ')
 
 // ---------------------------------------------------------------------------
